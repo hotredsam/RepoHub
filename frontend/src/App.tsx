@@ -6,6 +6,7 @@ import Connections from "./views/Connections";
 import Consistency from "./views/Consistency";
 import Merge from "./views/Merge";
 import Prompts from "./views/Prompts";
+import Tickets from "./views/Tickets";
 import Settings from "./views/Settings";
 
 type Health = { ok: boolean; service: string; version: string };
@@ -18,6 +19,7 @@ const TABS = [
   "Consistency",
   "Merge",
   "Prompts",
+  "Tickets",
   "Settings",
 ] as const;
 type Tab = (typeof TABS)[number];
@@ -94,6 +96,8 @@ function View({ tab }: { tab: Tab }) {
       return <Merge />;
     case "Prompts":
       return <Prompts />;
+    case "Tickets":
+      return <Tickets />;
     case "Settings":
       return <Settings />;
   }

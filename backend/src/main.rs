@@ -29,6 +29,7 @@ mod scheduler;
 mod settings_api;
 mod state;
 mod terminal;
+mod tickets;
 mod transcripts;
 mod ws_origin;
 mod ws_status;
@@ -105,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(mcp_config::router())
         .merge(knowledge::router())
         .merge(evals_gcloud::router())
+        .merge(tickets::router())
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(cors);

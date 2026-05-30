@@ -108,6 +108,7 @@ Backend only: `cd backend && cargo run`
 | P14 | **Infra wiring: NAS / SSH resource registry** | ✅ done |
 | P15 | **Cloud migration helper (→ Google Cloud)** | ✅ done |
 | P16 | **Unified layered Settings hub** (global ~/.claude + per-repo overrides; agents, MCP, knowledge, evals, Google Cloud) | 🟡 RepoHub side done; Google Cloud activation pending (needs gcloud + ADC) |
+| P17 | **Ticketing board backed by real GitHub Issues** (via `gh` CLI; list across tracked repos, create / comment / open-close, single source of truth on github.com) | ✅ done |
 
 ## Security
 
