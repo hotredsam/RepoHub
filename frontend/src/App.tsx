@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
+import Dashboard from "./views/Dashboard";
+import Chat from "./views/Chat";
+import RepoDetail from "./views/RepoDetail";
+import Connections from "./views/Connections";
+import Consistency from "./views/Consistency";
+import Prompts from "./views/Prompts";
+import Settings from "./views/Settings";
 
 type Health = { ok: boolean; service: string; version: string };
 
 const TABS = [
   "Dashboard",
+  "Chat",
   "Repo",
   "Connections",
   "Consistency",
@@ -62,19 +70,27 @@ export default function App() {
       </header>
 
       <main className="flex-1 overflow-auto p-6">
-        <Placeholder tab={tab} />
+        <View tab={tab} />
       </main>
     </div>
   );
 }
 
-function Placeholder({ tab }: { tab: Tab }) {
-  return (
-    <div className="mx-auto max-w-2xl rounded-xl border border-edge bg-panel p-8">
-      <h1 className="text-xl font-semibold">{tab}</h1>
-      <p className="mt-2 text-sm text-slate-400">
-        Scaffolded. This view will be built in a later phase.
-      </p>
-    </div>
-  );
+function View({ tab }: { tab: Tab }) {
+  switch (tab) {
+    case "Dashboard":
+      return <Dashboard />;
+    case "Chat":
+      return <Chat />;
+    case "Repo":
+      return <RepoDetail />;
+    case "Connections":
+      return <Connections />;
+    case "Consistency":
+      return <Consistency />;
+    case "Prompts":
+      return <Prompts />;
+    case "Settings":
+      return <Settings />;
+  }
 }

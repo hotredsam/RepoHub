@@ -46,7 +46,8 @@ without your click.
 
 ## Stack
 
-- **Backend** — Rust: `axum` + `tokio`, `sqlx`/SQLite, `git2`, `octocrab`, `portable-pty`.
+- **Backend** — Rust: `axum` + `tokio`, `sqlx`/SQLite. Git and GitHub via the system
+  `git` and `gh` CLIs (no `git2`/`octocrab`). `portable-pty` arrives with the terminal (P5).
   Binds to `127.0.0.1` only. WebSocket for live status / Claude streams / terminal.
 - **Frontend** — React + Vite + TypeScript + Tailwind. Web Speech API for voice.
 - **Auth** — reuses your `gh` CLI token. No extra login.
@@ -91,21 +92,21 @@ Backend only: `cd backend && cargo run`
 | Phase | Feature | Status |
 | --- | --- | --- |
 | P0 | Scaffold (axum + Vite, health, dev script) | ✅ done |
-| P1 | GitHub list · curated clone · dashboard cards | 🔜 |
-| P2 | Status engine · 5-min fetch · **pull-all** | 🔜 |
-| P3 | DB · prompt logging · transcript indexer | 🔜 |
-| P4 | Per-repo Claude chat | 🔜 |
-| P5 | Embedded terminal | 🔜 |
-| P6 | Settings · preferences · suggest-settings | 🔜 |
-| P7 | Connections / integration engine | 🔜 |
-| P8 | Consistency / styling engine | 🔜 |
-| P9 | Merge model (staging branch → 1 PR) | 🔜 |
-| P10 | Prompt search + analytics | 🔜 |
-| P11 | **App-wide chatbot + bulk Claude across repos** | 🔜 |
-| P12 | **Repo management: checkbox bulk-delete** | 🔜 |
-| P13 | **Voice-to-text input** | 🔜 |
-| P14 | **Infra wiring: NAS / SSH resource registry** | 🔜 |
-| P15 | **Cloud migration helper (→ Google Cloud)** | 🔜 |
+| P1 | GitHub list · curated clone · dashboard cards | ✅ done |
+| P2 | Status engine · 5-min fetch · **pull-all** | ✅ done |
+| P3 | DB · prompt logging · transcript indexer | ✅ done |
+| P4 | Per-repo Claude chat | ✅ done |
+| P5 | Embedded terminal | 🔜 (placeholder UI only) |
+| P6 | Settings · preferences · suggest-settings | 🟡 settings + preferences done; suggest-settings 🔜 |
+| P7 | Connections / integration engine | 🔜 (placeholder) |
+| P8 | Consistency / styling engine | 🔜 (placeholder) |
+| P9 | Merge model (staging branch → 1 PR) | 🟡 staging-branch commits land; 1-click PR 🔜 |
+| P10 | Prompt search + analytics | ✅ done |
+| P11 | **App-wide chatbot + bulk Claude across repos** | ✅ done |
+| P12 | **Repo management: checkbox bulk-delete** | ✅ done |
+| P13 | **Voice-to-text input** | ✅ done |
+| P14 | **Infra wiring: NAS / SSH resource registry** | ✅ done |
+| P15 | **Cloud migration helper (→ Google Cloud)** | ✅ done |
 
 ## Security
 
