@@ -4,6 +4,7 @@ import Chat from "./views/Chat";
 import RepoDetail from "./views/RepoDetail";
 import Connections from "./views/Connections";
 import Consistency from "./views/Consistency";
+import Merge from "./views/Merge";
 import Prompts from "./views/Prompts";
 import Settings from "./views/Settings";
 
@@ -15,6 +16,7 @@ const TABS = [
   "Repo",
   "Connections",
   "Consistency",
+  "Merge",
   "Prompts",
   "Settings",
 ] as const;
@@ -88,6 +90,8 @@ function View({ tab }: { tab: Tab }) {
       return <Connections />;
     case "Consistency":
       return <Consistency />;
+    case "Merge":
+      return <Merge />;
     case "Prompts":
       return <Prompts />;
     case "Settings":

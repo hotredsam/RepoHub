@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getPreferences,
   putPreferences,
@@ -8,6 +8,9 @@ import {
   testInfra,
   getSettings,
   putSetting,
+  listRepos,
+  suggestSettings,
+  applySuggestion,
 } from "../lib/api";
 import type {
   Preferences,
@@ -15,6 +18,9 @@ import type {
   CreateInfraBody,
   InfraTestResult,
   Setting,
+  Repo,
+  SuggestResponse,
+  SuggestedFile,
 } from "../lib/types";
 
 const LANGUAGE_OPTIONS = [
@@ -85,6 +91,18 @@ export default function Settings() {
   const [settingSaving, setSettingSaving] = useState(false);
   const [settingsBanner, setSettingsBanner] = useState<Banner>(null);
 
+  // ---- Suggest settings (AI) ----
+  const [repos, setRepos] = useState<Repo[] | null>(null);
+  const [reposLoading, setReposLoading] = useState(true);
+  const [reposError, setReposError] = useState<string | null>(null);
+  const [suggestRepoId, setSuggestRepoId] = useState<number | "">("");
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestion, setSuggestion] = useState<SuggestResponse | null>(null);
+  const [suggestRepoName, setSuggestRepoName] = useState<string>("");
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const [applying, setApplying] = useState(false);
+  const [suggestBanner, setSuggestBanner] = useState<Banner>(null);
+
   // ---- loaders ----
   const loadPrefs = useCallback(() => {
     setPrefsLoading(true);
@@ -115,11 +133,21 @@ export default function Settings() {
       .finally(() => setSettingsLoading(false));
   }, []);
 
+  const loadRepos = useCallback(() => {
+    setReposLoading(true);
+    setReposError(null);
+    listRepos()
+      .then(setRepos)
+      .catch((e) => setReposError(String(e instanceof Error ? e.message : e)))
+      .finally(() => setReposLoading(false));
+  }, []);
+
   useEffect(() => {
     loadPrefs();
     loadInfra();
     loadSettings();
-  }, [loadPrefs, loadInfra, loadSettings]);
+    loadRepos();
+  }, [loadPrefs, loadInfra, loadSettings, loadRepos]);
 
   // ---- prefs handlers ----
   const setPref = (key: string, value: string) =>
@@ -255,6 +283,94 @@ export default function Settings() {
       setSettingSaving(false);
     }
   };
+
+  // ---- suggest-settings handlers ----
+  // Flatten a suggestion into the concrete files we can apply, keyed by path.
+  const suggestedFiles: SuggestedFile[] = useMemo(() => {
+    if (!suggestion) return [];
+    const files: SuggestedFile[] = [];
+    if (suggestion.claude_md.trim())
+      files.push({ path: "CLAUDE.md", content: suggestion.claude_md });
+    if (suggestion.settings_json.trim())
+      files.push({
+        path: ".claude/settings.json",
+        content: suggestion.settings_json,
+      });
+    for (const dc of suggestion.dev_configs) {
+      if (dc.path.trim()) files.push(dc);
+    }
+    return files;
+  }, [suggestion]);
+
+  const runSuggest = async () => {
+    if (suggestRepoId === "") {
+      setSuggestBanner({ kind: "err", text: "Pick a repository first." });
+      return;
+    }
+    setSuggesting(true);
+    setSuggestBanner(null);
+    setSuggestion(null);
+    setChecked({});
+    const repoId = Number(suggestRepoId);
+    const repoName =
+      repos?.find((r) => r.id === repoId)?.full_name ?? `repo ${repoId}`;
+    setSuggestRepoName(repoName);
+    try {
+      const res = await suggestSettings({ repo_id: repoId });
+      setSuggestion(res);
+      // Default every proposed file to checked.
+      const next: Record<string, boolean> = {};
+      if (res.claude_md.trim()) next["CLAUDE.md"] = true;
+      if (res.settings_json.trim()) next[".claude/settings.json"] = true;
+      for (const dc of res.dev_configs) {
+        if (dc.path.trim()) next[dc.path] = true;
+      }
+      setChecked(next);
+      setSuggestBanner({
+        kind: "ok",
+        text: `Suggestion ready for "${repoName}". Review the files below.`,
+      });
+    } catch (err) {
+      setSuggestBanner({
+        kind: "err",
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  const applySelected = async () => {
+    if (suggestRepoId === "" || !suggestion) return;
+    const files = suggestedFiles.filter((f) => checked[f.path]);
+    if (files.length === 0) {
+      setSuggestBanner({ kind: "err", text: "Select at least one file." });
+      return;
+    }
+    setApplying(true);
+    setSuggestBanner(null);
+    try {
+      const res = await applySuggestion({
+        repo_id: Number(suggestRepoId),
+        files,
+      });
+      setSuggestBanner({
+        kind: "ok",
+        text: res.ok
+          ? `Applied ${files.length} file${files.length === 1 ? "" : "s"} to branch "${res.branch}". Review and open a PR to merge.`
+          : "Apply reported failure.",
+      });
+    } catch (err) {
+      setSuggestBanner({
+        kind: "err",
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const checkedCount = suggestedFiles.filter((f) => checked[f.path]).length;
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -568,6 +684,167 @@ export default function Settings() {
           )}
         </div>
       </section>
+
+      {/* ---- Suggest settings (AI) ---- */}
+      <section className="rounded-xl border border-edge bg-panel p-6">
+        <h2 className="text-lg font-semibold">Suggest settings (AI)</h2>
+        <p className="mt-1 text-xs text-slate-500">
+          Ask Claude to propose a <code className="text-slate-400">CLAUDE.md</code>,{" "}
+          <code className="text-slate-400">.claude/settings.json</code>, and dev
+          config for a repo. Nothing is written until you apply — selected files
+          land on the <span className="text-accent">repohub-staging</span> branch
+          for you to review and merge.
+        </p>
+
+        <div className="mt-4 flex flex-wrap items-end gap-3">
+          <Field label="Repository">
+            {reposLoading ? (
+              <span className="px-1 py-2 text-sm text-slate-400">
+                Loading repos…
+              </span>
+            ) : reposError ? (
+              <span className="px-1 py-2 text-sm text-rose-400">
+                {reposError}
+              </span>
+            ) : (
+              <select
+                value={suggestRepoId}
+                onChange={(e) =>
+                  setSuggestRepoId(
+                    e.target.value === "" ? "" : Number(e.target.value),
+                  )
+                }
+                className={inputCls}
+              >
+                <option value="">Select a repo…</option>
+                {(repos ?? []).map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.full_name}
+                    {r.local_path ? "" : " (not cloned)"}
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
+          <button
+            onClick={runSuggest}
+            disabled={suggesting || suggestRepoId === ""}
+            className="rounded-md bg-accent/20 px-4 py-2 text-sm text-accent transition hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {suggesting ? "Asking Claude…" : "Suggest"}
+          </button>
+          {suggesting && (
+            <span className="text-xs text-slate-500">
+              This calls Claude and may take a while.
+            </span>
+          )}
+        </div>
+
+        {suggestBanner && <BannerRow banner={suggestBanner} />}
+
+        {suggestion && (
+          <div className="mt-5 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-slate-400">
+                Proposed for{" "}
+                <span className="font-medium text-slate-200">
+                  {suggestRepoName}
+                </span>{" "}
+                · {suggestedFiles.length} file
+                {suggestedFiles.length === 1 ? "" : "s"} · {checkedCount}{" "}
+                selected
+              </p>
+              <button
+                onClick={applySelected}
+                disabled={applying || checkedCount === 0}
+                className="rounded-md bg-accent/20 px-3 py-1.5 text-sm text-accent transition hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {applying ? "Applying…" : "Apply selected to staging"}
+              </button>
+            </div>
+
+            {suggestion.rationale.trim() && (
+              <div className="rounded-lg border border-edge bg-slate-900/40 p-3">
+                <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Rationale
+                </h3>
+                <p className="mt-1.5 whitespace-pre-wrap text-sm text-slate-300">
+                  {suggestion.rationale}
+                </p>
+              </div>
+            )}
+
+            {suggestedFiles.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-edge px-4 py-6 text-center text-sm text-slate-500">
+                Claude did not propose any files.
+              </p>
+            ) : (
+              suggestedFiles.map((f) => (
+                <SuggestFile
+                  key={f.path}
+                  file={f}
+                  checked={!!checked[f.path]}
+                  onToggle={() =>
+                    setChecked((c) => ({ ...c, [f.path]: !c[f.path] }))
+                  }
+                />
+              ))
+            )}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// Maps a proposed file path to a label and (best-effort) language hint.
+function langOf(path: string): string {
+  if (path.endsWith(".json")) return "json";
+  if (path.endsWith(".md")) return "markdown";
+  if (path.endsWith(".toml")) return "toml";
+  if (path.endsWith(".yml") || path.endsWith(".yaml")) return "yaml";
+  return "text";
+}
+
+function SuggestFile({
+  file,
+  checked,
+  onToggle,
+}: {
+  file: SuggestedFile;
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="overflow-hidden rounded-lg border border-edge bg-slate-900/40">
+      <div className="flex items-center gap-3 px-3 py-2">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onToggle}
+          className="h-4 w-4 accent-accent"
+          aria-label={`Apply ${file.path}`}
+        />
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex flex-1 items-center gap-2 text-left"
+        >
+          <span className="text-slate-400">{open ? "▾" : "▸"}</span>
+          <span className="font-mono text-xs text-slate-200">{file.path}</span>
+          <span className="rounded bg-edge px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-500">
+            {langOf(file.path)}
+          </span>
+          <span className="ml-auto text-[11px] text-slate-500">
+            {file.content.split("\n").length} lines
+          </span>
+        </button>
+      </div>
+      {open && (
+        <pre className="max-h-80 overflow-auto border-t border-edge bg-slate-950/60 px-3 py-2 text-xs leading-relaxed text-slate-300">
+          <code>{file.content}</code>
+        </pre>
+      )}
     </div>
   );
 }

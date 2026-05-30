@@ -96,11 +96,11 @@ Backend only: `cd backend && cargo run`
 | P2 | Status engine · 5-min fetch · **pull-all** | ✅ done |
 | P3 | DB · prompt logging · transcript indexer | ✅ done |
 | P4 | Per-repo Claude chat | ✅ done |
-| P5 | Embedded terminal | 🔜 (placeholder UI only) |
-| P6 | Settings · preferences · suggest-settings | 🟡 settings + preferences done; suggest-settings 🔜 |
-| P7 | Connections / integration engine | 🔜 (placeholder) |
-| P8 | Consistency / styling engine | 🔜 (placeholder) |
-| P9 | Merge model (staging branch → 1 PR) | 🟡 staging-branch commits land; 1-click PR 🔜 |
+| P5 | Embedded terminal | ✅ done (real PTY over `/ws/terminal` + xterm.js) |
+| P6 | Settings · preferences · suggest-settings | ✅ done |
+| P7 | Connections / integration engine | ✅ done |
+| P8 | Consistency / styling engine | ✅ done |
+| P9 | Merge model (staging branch → 1 PR) | ✅ done (auto-merge: push → PR → merge to default) |
 | P10 | Prompt search + analytics | ✅ done |
 | P11 | **App-wide chatbot + bulk Claude across repos** | ✅ done |
 | P12 | **Repo management: checkbox bulk-delete** | ✅ done |

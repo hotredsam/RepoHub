@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Repo } from "../lib/types";
 import { listRepos } from "../lib/api";
 import { openClaudeStream } from "../lib/ws";
+import Terminal from "../components/Terminal";
 
 interface Msg {
   role: "user" | "assistant" | "system";
@@ -137,16 +138,8 @@ export default function RepoDetail() {
           </div>
         </div>
 
-        {/* Terminal placeholder */}
-        <div className="rounded-xl border border-edge bg-panel p-4">
-          <div className="text-sm font-semibold text-slate-200">Embedded terminal</div>
-          <p className="mt-2 text-xs text-slate-500">
-            A real PTY-backed terminal scoped to this repo arrives in a later phase (P5).
-          </p>
-          <div className="mt-3 h-48 rounded-md border border-edge bg-base/60 p-3 font-mono text-xs text-slate-600">
-            $ _
-          </div>
-        </div>
+        {/* Embedded PTY terminal — reconnects when the selected repo changes */}
+        <Terminal key={repoId ?? "none"} repoId={repoId} />
       </div>
     </div>
   );

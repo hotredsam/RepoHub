@@ -17,6 +17,10 @@ import type {
   PromptAnalytics,
   TranscriptStatus,
   ReindexResult,
+  SuggestBody,
+  SuggestResponse,
+  ApplySuggestionBody,
+  ApplySuggestionResponse,
 } from "./types";
 
 // ---- low-level helper ----
@@ -137,6 +141,14 @@ export const getPreferences = () => get<Preferences>("/api/preferences");
 
 export const putPreferences = (prefs: Partial<Preferences>) =>
   put<Preferences>("/api/preferences", prefs);
+
+// Ask Claude to PROPOSE repo config (preview only — nothing is written).
+export const suggestSettings = (body: SuggestBody) =>
+  post<SuggestResponse>("/api/settings/suggest", body);
+
+// Write the selected suggested files onto the repo's staging branch.
+export const applySuggestion = (body: ApplySuggestionBody) =>
+  post<ApplySuggestionResponse>("/api/settings/apply-suggestion", body);
 
 // ---- prompts_api.rs ----
 

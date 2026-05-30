@@ -1,232 +1,433 @@
-import { useEffect, useMemo, useState } from "react";
-import { listRepos } from "../lib/api";
-import type { Repo } from "../lib/types";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import ReactFlow, {
+  Background,
+  Controls,
+  addEdge,
+  useNodesState,
+  useEdgesState,
+} from "reactflow";
+import type { Connection, Edge, Node } from "reactflow";
+import "reactflow/dist/style.css";
 
-// Connections.tsx
-// Placeholder for the cross-repo integration graph. The full drag-to-integrate
-// dependency graph (reactflow) arrives in a later phase; for now we explain the
-// concept and list the repos that will become nodes in that graph.
+// Connections.tsx (P7)
+// Cross-repo integration graph. Repos become nodes laid out on a simple grid.
+// Drag from a SOURCE node handle to a TARGET node to declare an integration:
+// a modal collects a free-text instruction and POSTs it; Claude scaffolds the
+// wiring on the repohub-staging branch and returns a diff stat + response
+// excerpt, which we surface as the new edge's label.
+
+// ---- API contract (kept local to this unit; mirrors backend connections.rs) ----
+
+interface GraphRepo {
+  id: number;
+  name: string;
+  full_name: string;
+  language: string | null;
+}
+
+// Shape used purely for building a react-flow edge. The backend persists no
+// connections, so these are derived locally from the integrate request.
+interface GraphConnection {
+  source_id: number;
+  target_id: number;
+  instruction: string;
+}
+
+interface IntegrateBody {
+  source_id: number;
+  target_id: number;
+  instruction: string;
+}
+
+// Matches backend connections.rs `IntegrateResult`.
+interface IntegrateResult {
+  ok: boolean;
+  branch: string;
+  committed: boolean;
+  diff_stat: string;
+  response_excerpt: string;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    ...init,
+  });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === "string") msg = body.error;
+    } catch {
+      // ignore non-JSON error bodies
+    }
+    throw new Error(`${path} failed: ${msg}`);
+  }
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+// Backend returns a bare JSON array of repo nodes (no persisted connections).
+const getGraph = () => request<GraphRepo[]>("/api/connections/graph");
+
+const integrate = (body: IntegrateBody) =>
+  request<IntegrateResult>("/api/connections/integrate", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+// ---- layout helpers ----
+
+const COLS = 3;
+const COL_GAP = 240;
+const ROW_GAP = 130;
+
+function gridPosition(index: number): { x: number; y: number } {
+  const col = index % COLS;
+  const row = Math.floor(index / COLS);
+  return { x: col * COL_GAP, y: row * ROW_GAP };
+}
+
+function repoNode(repo: GraphRepo, index: number): Node {
+  return {
+    id: String(repo.id),
+    position: gridPosition(index),
+    data: {
+      label: (
+        <div className="text-left">
+          <div className="truncate text-sm font-medium text-slate-100">
+            {repo.name}
+          </div>
+          <div className="mt-0.5 text-[11px] text-slate-400">
+            {repo.language ?? "—"}
+          </div>
+        </div>
+      ),
+    },
+    style: {
+      width: 180,
+      borderRadius: 10,
+      border: "1px solid #2a3344",
+      background: "#0f1626",
+      color: "#e2e8f0",
+      padding: "10px 12px",
+    },
+  };
+}
+
+function connectionEdge(c: GraphConnection): Edge {
+  return {
+    id: `e-${c.source_id}-${c.target_id}`,
+    source: String(c.source_id),
+    target: String(c.target_id),
+    label: c.instruction,
+    animated: true,
+    labelStyle: { fill: "#cbd5e1", fontSize: 11 },
+    labelBgStyle: { fill: "#0f1626" },
+    labelBgPadding: [6, 3] as [number, number],
+    labelBgBorderRadius: 4,
+    style: { stroke: "#6366f1" },
+  };
+}
+
+// ---- component ----
+
+interface PendingConnect {
+  source: GraphRepo;
+  target: GraphRepo;
+}
+
 export default function Connections() {
-  const [repos, setRepos] = useState<Repo[]>([]);
+  const [repos, setRepos] = useState<GraphRepo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
 
-  async function load() {
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+
+  // Modal / integration state.
+  const [pending, setPending] = useState<PendingConnect | null>(null);
+  const [instruction, setInstruction] = useState("");
+  const [integrating, setIntegrating] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [result, setResult] = useState<IntegrateResult | null>(null);
+
+  const repoById = useMemo(() => {
+    const m = new Map<number, GraphRepo>();
+    for (const r of repos) m.set(r.id, r);
+    return m;
+  }, [repos]);
+
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await listRepos();
-      setRepos(data);
+      const list = await getGraph();
+      setRepos(list);
+      setNodes(list.map((r, i) => repoNode(r, i)));
+      // The backend exposes no persisted connections; start with no edges.
+      setEdges([]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }
+  }, [setNodes, setEdges]);
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // User drew an edge: open the modal instead of committing immediately.
+  const onConnect = useCallback(
+    (params: Connection) => {
+      if (!params.source || !params.target || params.source === params.target) {
+        return;
+      }
+      const source = repoById.get(Number(params.source));
+      const target = repoById.get(Number(params.target));
+      if (!source || !target) return;
+      setPending({ source, target });
+      setInstruction("");
+      setModalError(null);
+      setResult(null);
+    },
+    [repoById],
+  );
+
+  const closeModal = useCallback(() => {
+    setPending(null);
+    setInstruction("");
+    setModalError(null);
+    setResult(null);
+    setIntegrating(false);
   }, []);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const sorted = [...repos].sort((a, b) =>
-      a.full_name.localeCompare(b.full_name),
-    );
-    if (!q) return sorted;
-    return sorted.filter(
-      (r) =>
-        r.full_name.toLowerCase().includes(q) ||
-        (r.language ?? "").toLowerCase().includes(q) ||
-        (r.description ?? "").toLowerCase().includes(q),
-    );
-  }, [repos, query]);
-
-  const trackedCount = useMemo(
-    () => repos.filter((r) => r.tracked).length,
-    [repos],
-  );
+  const submitIntegration = useCallback(async () => {
+    if (!pending) return;
+    const text = instruction.trim();
+    if (!text) {
+      setModalError("Describe the integration before continuing.");
+      return;
+    }
+    setIntegrating(true);
+    setModalError(null);
+    try {
+      const res = await integrate({
+        source_id: pending.source.id,
+        target_id: pending.target.id,
+        instruction: text,
+      });
+      setResult(res);
+      // Render the new edge from the local source/target (the backend's
+      // IntegrateResult does not echo the ids) labeled with the instruction.
+      setEdges((eds) =>
+        addEdge(
+          connectionEdge({
+            source_id: pending.source.id,
+            target_id: pending.target.id,
+            instruction: text,
+          }),
+          eds,
+        ),
+      );
+    } catch (e) {
+      setModalError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIntegrating(false);
+    }
+  }, [pending, instruction, setEdges]);
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-6">
-      {/* Intro / concept card */}
-      <div className="rounded-xl border border-edge bg-panel p-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold">Connections</h1>
-            <p className="mt-2 max-w-2xl text-sm text-slate-400">
-              Map how your repositories relate to one another. Soon you will be
-              able to <span className="text-accent">drag one repo onto another</span>{" "}
-              to declare an integration — a shared library, an API contract, or a
-              deployment dependency — and Claude will scaffold the wiring across
-              both repos on their{" "}
-              <code className="rounded bg-edge px-1 py-0.5 text-xs text-slate-200">
-                repohub-staging
-              </code>{" "}
-              branches.
-            </p>
-          </div>
-          <span className="shrink-0 rounded-full border border-edge bg-edge/40 px-3 py-1 text-xs text-slate-400">
-            graph coming soon
-          </span>
+    <div className="mx-auto flex max-w-6xl flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-slate-100">Connections</h1>
+          <p className="mt-1 max-w-2xl text-sm text-slate-400">
+            Drag from one repo to another to declare an integration. Claude
+            scaffolds the wiring across both repos on their{" "}
+            <code className="rounded bg-edge px-1 py-0.5 text-xs text-slate-200">
+              repohub-staging
+            </code>{" "}
+            branches.
+          </p>
         </div>
-
-        <div className="mt-5 grid gap-3 sm:grid-cols-3">
-          <ConceptStep
-            n={1}
-            title="Pick a source"
-            body="Choose a repo whose code or API another project should consume."
-          />
-          <ConceptStep
-            n={2}
-            title="Drag to a target"
-            body="Drop it onto a target repo to create a directed connection."
-          />
-          <ConceptStep
-            n={3}
-            title="Let Claude wire it"
-            body="A bulk staging job scaffolds the integration in both repos."
-          />
-        </div>
+        <button
+          onClick={() => void load()}
+          disabled={loading}
+          className="rounded-md border border-edge px-3 py-1.5 text-sm text-slate-300 transition hover:bg-edge hover:text-slate-100 disabled:opacity-50"
+        >
+          {loading ? "Loading…" : "Refresh"}
+        </button>
       </div>
 
-      {/* Repo list = future graph nodes */}
-      <div className="rounded-xl border border-edge bg-panel p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold">Graph nodes</h2>
-            <p className="mt-1 text-xs text-slate-500">
-              {loading
-                ? "Loading repositories…"
-                : `${repos.length} repos · ${trackedCount} tracked`}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Filter repos…"
-              className="w-48 rounded-md border border-edge bg-edge/30 px-3 py-1.5 text-sm text-slate-200 placeholder:text-slate-500 focus:border-accent focus:outline-none"
-            />
-            <button
-              onClick={() => void load()}
-              disabled={loading}
-              className="rounded-md border border-edge px-3 py-1.5 text-sm text-slate-300 transition hover:bg-edge hover:text-slate-100 disabled:opacity-50"
-            >
-              Refresh
-            </button>
-          </div>
+      {error ? (
+        <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-300">
+          <p className="font-medium">Could not load the connection graph.</p>
+          <p className="mt-1 text-rose-300/80">{error}</p>
+          <button
+            onClick={() => void load()}
+            className="mt-3 rounded-md border border-rose-500/40 px-3 py-1 text-xs text-rose-200 transition hover:bg-rose-500/20"
+          >
+            Try again
+          </button>
         </div>
+      ) : loading ? (
+        <div className="h-[600px] animate-pulse rounded-xl border border-edge bg-edge/20" />
+      ) : repos.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-edge p-12 text-center">
+          <p className="text-sm text-slate-200">No tracked repos to connect.</p>
+          <p className="mt-2 text-xs text-slate-500">
+            Track some repositories on the Dashboard first — once a repo is
+            tracked it appears here as a node you can wire to others.
+          </p>
+        </div>
+      ) : (
+        <div className="h-[600px] overflow-hidden rounded-xl border border-edge bg-panel">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            fitView
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background color="#1e293b" gap={18} />
+            <Controls />
+          </ReactFlow>
+        </div>
+      )}
 
-        <div className="mt-5">
-          {error ? (
-            <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-300">
-              <p className="font-medium">Could not load repositories.</p>
-              <p className="mt-1 text-rose-300/80">{error}</p>
-              <button
-                onClick={() => void load()}
-                className="mt-3 rounded-md border border-rose-500/40 px-3 py-1 text-xs text-rose-200 transition hover:bg-rose-500/20"
-              >
-                Try again
-              </button>
-            </div>
-          ) : loading ? (
-            <div className="grid gap-2 sm:grid-cols-2">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="h-16 animate-pulse rounded-lg border border-edge bg-edge/20"
-                />
-              ))}
-            </div>
-          ) : repos.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-edge p-8 text-center">
-              <p className="text-sm text-slate-300">No repositories yet.</p>
-              <p className="mt-1 text-xs text-slate-500">
-                Refresh from GitHub on the Dashboard to populate the graph.
-              </p>
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-edge p-8 text-center text-sm text-slate-400">
-              No repos match “{query}”.
-            </div>
-          ) : (
-            <ul className="grid gap-2 sm:grid-cols-2">
-              {filtered.map((r) => (
-                <NodeCard key={r.id} repo={r} />
-              ))}
-            </ul>
-          )}
-        </div>
-      </div>
+      {pending && (
+        <IntegrateModal
+          source={pending.source}
+          target={pending.target}
+          instruction={instruction}
+          onInstructionChange={setInstruction}
+          integrating={integrating}
+          error={modalError}
+          result={result}
+          onCancel={closeModal}
+          onSubmit={() => void submitIntegration()}
+        />
+      )}
     </div>
   );
 }
 
-function ConceptStep({
-  n,
-  title,
-  body,
+// ---- modal ----
+
+function IntegrateModal({
+  source,
+  target,
+  instruction,
+  onInstructionChange,
+  integrating,
+  error,
+  result,
+  onCancel,
+  onSubmit,
 }: {
-  n: number;
-  title: string;
-  body: string;
+  source: GraphRepo;
+  target: GraphRepo;
+  instruction: string;
+  onInstructionChange: (v: string) => void;
+  integrating: boolean;
+  error: string | null;
+  result: IntegrateResult | null;
+  onCancel: () => void;
+  onSubmit: () => void;
 }) {
   return (
-    <div className="rounded-lg border border-edge bg-edge/20 p-4">
-      <div className="flex items-center gap-2">
-        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-accent/20 text-xs font-semibold text-accent">
-          {n}
-        </span>
-        <span className="text-sm font-medium text-slate-200">{title}</span>
-      </div>
-      <p className="mt-2 text-xs text-slate-400">{body}</p>
-    </div>
-  );
-}
-
-function NodeCard({ repo }: { repo: Repo }) {
-  return (
-    <li
-      className="group cursor-grab rounded-lg border border-edge bg-edge/20 p-3 transition hover:border-accent/50"
-      draggable={false}
-      title="Drag-to-integrate arrives in a later phase"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onCancel}
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium text-slate-200">
-              {repo.full_name}
-            </span>
-            {repo.private && (
-              <span className="shrink-0 rounded bg-edge px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
-                private
-              </span>
-            )}
+      <div
+        className="w-full max-w-lg rounded-xl border border-edge bg-panel p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-base font-semibold text-slate-100">
+          Integrate{" "}
+          <span className="text-accent">{source.name}</span> into{" "}
+          <span className="text-accent">{target.name}</span>
+        </h2>
+        <p className="mt-1 text-xs text-slate-500">
+          Describe how <code className="text-slate-300">{source.full_name}</code>{" "}
+          should be wired into{" "}
+          <code className="text-slate-300">{target.full_name}</code>. The change
+          lands on each repo's repohub-staging branch.
+        </p>
+
+        {result ? (
+          <div className="mt-4 space-y-3">
+            <div className="rounded-md bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+              Integration scaffolded.
+            </div>
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                Diff stat
+              </p>
+              <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-md border border-edge bg-slate-900/60 px-3 py-2 font-mono text-xs text-slate-300">
+                {result.diff_stat || "(no changes reported)"}
+              </pre>
+            </div>
+            <div>
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                Claude response
+              </p>
+              <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-edge bg-slate-900/60 px-3 py-2 text-xs text-slate-300">
+                {result.response_excerpt || "(no response excerpt)"}
+              </pre>
+            </div>
+            <div className="flex justify-end">
+              <button
+                onClick={onCancel}
+                className="rounded-md bg-accent/20 px-4 py-2 text-sm text-accent transition hover:bg-accent/30"
+              >
+                Done
+              </button>
+            </div>
           </div>
-          {repo.description && (
-            <p className="mt-1 truncate text-xs text-slate-500">
-              {repo.description}
-            </p>
-          )}
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-1 text-[11px]">
-          {repo.language && (
-            <span className="rounded bg-edge px-1.5 py-0.5 text-slate-300">
-              {repo.language}
-            </span>
-          )}
-          <span
-            className={
-              repo.tracked ? "text-emerald-400" : "text-slate-500"
-            }
-          >
-            {repo.tracked ? "tracked" : "untracked"}
-          </span>
-        </div>
+        ) : (
+          <>
+            <textarea
+              autoFocus
+              value={instruction}
+              onChange={(e) => onInstructionChange(e.target.value)}
+              disabled={integrating}
+              rows={5}
+              placeholder={`e.g. Expose ${source.name}'s client as a typed dependency and call it from ${target.name}'s API layer.`}
+              className="mt-4 w-full resize-y rounded-md border border-edge bg-slate-900/60 px-3 py-2 text-sm text-slate-200 outline-none placeholder:text-slate-600 focus:border-accent disabled:opacity-50"
+            />
+
+            {error && (
+              <p className="mt-3 rounded-md bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
+                {error}
+              </p>
+            )}
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={onCancel}
+                disabled={integrating}
+                className="rounded-md border border-edge px-4 py-2 text-sm text-slate-300 transition hover:bg-edge disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={onSubmit}
+                disabled={integrating || !instruction.trim()}
+                className="rounded-md bg-accent/20 px-4 py-2 text-sm text-accent transition hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {integrating ? "Integrating…" : "Integrate"}
+              </button>
+            </div>
+          </>
+        )}
       </div>
-    </li>
+    </div>
   );
 }

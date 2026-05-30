@@ -144,3 +144,32 @@ export interface ClaudeWsRequest {
   repo_id: number | null;
   prompt: string;
 }
+
+// ---- settings_api.rs: AI suggestion of repo config ----
+
+// One file the model proposes (and the unit we apply onto the staging branch).
+export interface SuggestedFile {
+  path: string;
+  content: string;
+}
+
+export interface SuggestBody {
+  repo_id: number;
+}
+
+export interface SuggestResponse {
+  claude_md: string;
+  settings_json: string;
+  dev_configs: SuggestedFile[];
+  rationale: string;
+}
+
+export interface ApplySuggestionBody {
+  repo_id: number;
+  files: SuggestedFile[];
+}
+
+export interface ApplySuggestionResponse {
+  ok: boolean;
+  branch: string;
+}

@@ -7,23 +7,29 @@ mod bulk;
 mod claude_api;
 mod claude_runner;
 mod config;
+mod connections;
+mod consistency;
 mod db;
 mod error;
 mod github;
 mod gitops;
 mod infra;
+mod merge;
 mod models;
 mod prompts_api;
 mod repos;
 mod scheduler;
 mod settings_api;
 mod state;
+mod terminal;
 mod transcripts;
+mod ws_origin;
 mod ws_status;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::http::{HeaderValue, Method};
 use axum::{routing::get, Json, Router};
 use serde_json::json;
 use tower_http::cors::CorsLayer;
@@ -56,6 +62,23 @@ async fn main() -> anyhow::Result<()> {
 
     scheduler::spawn(state.clone());
 
+    // Explicit local-origin allowlist instead of CorsLayer::permissive(): only
+    // the API port and the Vite dev server on loopback hosts may make
+    // cross-origin requests. (WebSocket Origin enforcement lives in ws_origin.)
+    let allowed_origins: Vec<HeaderValue> = [
+        format!("http://127.0.0.1:{}", cfg.port),
+        format!("http://localhost:{}", cfg.port),
+        "http://127.0.0.1:5173".to_string(),
+        "http://localhost:5173".to_string(),
+    ]
+    .into_iter()
+    .filter_map(|o| HeaderValue::from_str(&o).ok())
+    .collect();
+    let cors = CorsLayer::new()
+        .allow_origin(allowed_origins)
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([axum::http::header::CONTENT_TYPE]);
+
     let app = Router::new()
         .route("/api/health", get(health))
         .merge(repos::router())
@@ -66,9 +89,13 @@ async fn main() -> anyhow::Result<()> {
         .merge(prompts_api::router())
         .merge(transcripts::router())
         .merge(ws_status::router())
+        .merge(terminal::router())
+        .merge(connections::router())
+        .merge(consistency::router())
+        .merge(merge::router())
         .with_state(state)
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive());
+        .layer(cors);
 
     let addr = SocketAddr::from((cfg.bind_host, cfg.port));
     let listener = tokio::net::TcpListener::bind(addr).await?;

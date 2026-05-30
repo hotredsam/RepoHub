@@ -3,6 +3,7 @@
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -13,6 +14,7 @@ use crate::claude_runner;
 use crate::error::ApiResult;
 use crate::models::Prompt;
 use crate::state::AppState;
+use crate::ws_origin::check_origin;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -27,8 +29,17 @@ struct ClaudeRequest {
     prompt: String,
 }
 
-async fn ws_claude(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+async fn ws_claude(
+    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // Reject cross-site WebSocket hijacking before upgrading.
+    if let Err(status) = check_origin(&headers, &state.cfg) {
+        return status.into_response();
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+        .into_response()
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {

@@ -7,12 +7,14 @@
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::state::AppState;
+use crate::ws_origin::check_origin;
 
 /// Feature router. Merged under the main app by the integrate step.
 pub fn router() -> Router<AppState> {
@@ -20,8 +22,17 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Upgrade the HTTP connection to a WebSocket and hand it to [`handle_socket`].
-async fn ws_status(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+async fn ws_status(
+    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // Reject cross-site WebSocket hijacking before upgrading.
+    if let Err(status) = check_origin(&headers, &state.cfg) {
+        return status.into_response();
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+        .into_response()
 }
 
 /// Per-connection task: relay broadcast events to the client and watch for the
