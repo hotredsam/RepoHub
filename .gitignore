@@ -1,0 +1,16 @@
+# Runtime data lives at the data root (default ~/RepoHub), outside this source tree.
+# If REPOHUB_ROOT is pointed inside the repo, these keep clones/db out of git:
+/repos/
+/data/
+
+# Rust
+/backend/target/
+
+# Node
+/frontend/node_modules/
+/frontend/dist/
+/frontend/tsconfig.tsbuildinfo
+
+# Env / OS
+.env
+.DS_Store
