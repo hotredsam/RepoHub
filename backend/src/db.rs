@@ -108,6 +108,56 @@ CREATE TABLE IF NOT EXISTS eval_runs (
     created_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_eval_runs_suite ON eval_runs(suite_id);
+
+-- ---------------------------------------------------------------------------
+-- P18/P19 remote-access + Codex auth tables.
+-- ---------------------------------------------------------------------------
+
+-- Browser login sessions. We store only the HMAC hash of the opaque cookie
+-- token, never the raw token. `revoked`/`expires_at` gate liveness.
+CREATE TABLE IF NOT EXISTS sessions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash   TEXT NOT NULL UNIQUE,
+    email        TEXT NOT NULL,
+    origin       TEXT,
+    ua           TEXT,
+    ip           TEXT,
+    created_at   TEXT NOT NULL,
+    last_seen_at TEXT,
+    expires_at   TEXT,
+    revoked      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_email ON sessions(email);
+CREATE INDEX IF NOT EXISTS idx_sessions_revoked ON sessions(revoked);
+
+-- ChatGPT Codex bearer credentials. Only the token hash is stored; `label` is a
+-- human name; `revoked`/`revoked_at` allow soft revocation.
+CREATE TABLE IF NOT EXISTS codex_credentials (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash   TEXT NOT NULL UNIQUE,
+    label        TEXT,
+    created_at   TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked      INTEGER NOT NULL DEFAULT 0,
+    revoked_at   TEXT
+);
+
+-- Append-only audit trail of authenticated/destructive requests.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts            TEXT NOT NULL,
+    actor         TEXT,
+    actor_kind    TEXT,
+    credential_id INTEGER,
+    method        TEXT,
+    path          TEXT,
+    query         TEXT,
+    status        INTEGER,
+    summary       TEXT,
+    body_excerpt  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log(ts);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor);
 "#;
 
 /// Connect to the SQLite database and apply the embedded schema.

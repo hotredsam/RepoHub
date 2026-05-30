@@ -18,9 +18,20 @@ use serde_json::json;
 use std::path::PathBuf;
 use tokio::process::Command;
 
+use sha2::{Digest, Sha256};
+
+use crate::auth_mw::{self, Principal};
 use crate::error::{ApiResult, AppError};
 use crate::models::Repo;
 use crate::state::AppState;
+
+/// SHA-256 (lowercase hex) of a request body — bound into the Codex destructive
+/// confirmation token (P19).
+fn body_hash(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    hex::encode(h.finalize())
+}
 
 /// Per-repo staging branch that Claude changes land on. Kept in sync with
 /// `repos::staging_branch()`.
@@ -156,12 +167,16 @@ async fn pending(State(state): State<AppState>) -> ApiResult<Json<Vec<PendingEnt
 // POST /api/merge/finish
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct FinishBody {
     pub repo_ids: Vec<i64>,
     /// "squash" (default) | "merge".
     #[serde(default)]
     pub strategy: Option<String>,
+    /// Echo of the confirmation token issued on the first (challenged) attempt.
+    /// Only consulted for the Codex principal (P19 destructive-action guard).
+    #[serde(default)]
+    pub confirm_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -357,8 +372,30 @@ async fn sync_local_after_merge(lp: &str, default_branch: &str) {
 
 async fn finish(
     State(state): State<AppState>,
+    principal: Principal,
     Json(body): Json<FinishBody>,
 ) -> ApiResult<Json<FinishResponse>> {
+    // Codex destructive-action guard: User/Local are exempt; Codex must present a
+    // valid confirmation token bound to this exact request body.
+    //
+    // CRITICAL: hash the body with `confirm_token` cleared so the challenge
+    // (token=None) and the retry (token=Some) bind to the SAME hash. Hashing the
+    // body *including* the echoed token would make the retry re-challenge forever.
+    let supplied = body.confirm_token.clone();
+    let mut for_hash = body;
+    for_hash.confirm_token = None;
+    let bh = body_hash(serde_json::to_vec(&for_hash).unwrap_or_default().as_slice());
+    let body = for_hash;
+    auth_mw::require_confirmation(
+        &state,
+        &principal,
+        "POST",
+        "/api/merge/finish",
+        &bh,
+        supplied.as_deref(),
+    )
+    .await?;
+
     let strategy = body.strategy.as_deref().unwrap_or("squash").to_lowercase();
     let merge_flag = match strategy.as_str() {
         "merge" => "--merge",

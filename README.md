@@ -109,6 +109,9 @@ Backend only: `cd backend && cargo run`
 | P15 | **Cloud migration helper (→ Google Cloud)** | ✅ done |
 | P16 | **Unified layered Settings hub** (global ~/.claude + per-repo overrides; agents, MCP, knowledge, evals, Google Cloud) | 🟡 RepoHub side done; Google Cloud activation pending (needs gcloud + ADC) |
 | P17 | **Ticketing board backed by real GitHub Issues** (via `gh` CLI; list across tracked repos, create / comment / open-close, single source of truth on github.com) | ✅ done |
+| P18 | **Remote access: Tailscale serve + Google OAuth** (sign-in over the tailnet, signed session cookies, email allowlist, loopback stays unauthenticated) | 🟡 code done; live activation needs a Google OAuth client (+ gcloud Secret Manager or a settings secret) and `tailscale serve` |
+| P19 | **ChatGPT Codex full-access integration** (bearer credentials, per-request audit trail with secret redaction, destructive-action double-confirm, one-click kill switch) | 🟡 code done; off by default — issue a Codex token to activate; no external service required |
+| P20 | **GitHub permissions analysis** (issue #1: surface token scopes / repo access and flag over-broad grants) | 🟡 code done; uses the existing `gh` token — no extra activation, GitHub-side scope changes are manual |
 
 ## Security
 

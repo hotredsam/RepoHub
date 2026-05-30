@@ -19,6 +19,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::auth_mw::{self, Principal};
 use crate::error::{ApiResult, AppError};
 use crate::models::{Prompt, Repo, Setting};
 use crate::state::AppState;
@@ -525,10 +526,14 @@ async fn suggest_settings(
 // POST /api/settings/apply-suggestion  — write files onto the staging branch.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ApplySuggestionBody {
     pub repo_id: i64,
     pub files: Vec<SuggestedFile>,
+    /// Echo of the confirmation token issued on the first (challenged) attempt.
+    /// Only consulted for the Codex principal (P19 destructive-action guard).
+    #[serde(default)]
+    pub confirm_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -605,8 +610,27 @@ fn safe_join(root: &FsPath, rel: &str) -> ApiResult<PathBuf> {
 
 async fn apply_suggestion(
     State(state): State<AppState>,
+    principal: Principal,
     Json(body): Json<ApplySuggestionBody>,
 ) -> ApiResult<Json<ApplySuggestionResponse>> {
+    // Codex destructive-action guard: this writes files and commits to the staging
+    // branch. User/Local are exempt; Codex must double-confirm. Hash the body with
+    // `confirm_token` cleared so the challenge and retry bind identically.
+    let supplied = body.confirm_token.clone();
+    let mut for_hash = body;
+    for_hash.confirm_token = None;
+    let canonical = serde_json::to_vec(&for_hash).unwrap_or_default();
+    let body = for_hash;
+    auth_mw::require_confirmation_json(
+        &state,
+        &principal,
+        "POST",
+        "/api/settings/apply-suggestion",
+        &canonical,
+        supplied.as_deref(),
+    )
+    .await?;
+
     if body.files.is_empty() {
         return Err(AppError::msg("no files to apply"));
     }

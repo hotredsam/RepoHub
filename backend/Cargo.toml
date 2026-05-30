@@ -23,3 +23,18 @@ chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 tokio-stream = "0.1"
 portable-pty = "0.8"
+
+# P18/P19 auth foundation. OIDC stack: the LIGHTER option — verify Google ID
+# tokens with `jsonwebtoken` (validate RS256 against Google's JWKS fetched with
+# `reqwest`), instead of pulling a full openid-connect client crate. `oauth2`
+# drives the authorization-code exchange. All TLS via rustls (no OpenSSL).
+rand = "0.8"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+cookie = "0.18"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+jsonwebtoken = "9"
+oauth2 = "4"
+async-trait = "0.1"

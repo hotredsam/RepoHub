@@ -10,4 +10,6 @@ pub struct AppState {
     /// Broadcasts JSON status events (repo status changes, scheduler ticks, etc.)
     /// to any subscribed `/ws/status` clients.
     pub status_tx: tokio::sync::broadcast::Sender<String>,
+    /// Per-install signing keys for session + confirmation tokens (P18/P19).
+    pub auth: Arc<crate::auth_session::AuthKeys>,
 }

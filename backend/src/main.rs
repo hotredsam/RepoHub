@@ -4,7 +4,12 @@
 //! background fetch scheduler, and merges every feature router under one app.
 
 mod agents_config;
+mod audit;
+mod auth_google;
+mod auth_mw;
+mod auth_session;
 mod bulk;
+mod codex;
 mod claude_api;
 mod claude_config;
 mod claude_fs;
@@ -16,6 +21,7 @@ mod db;
 mod error;
 mod evals_gcloud;
 mod gcloud;
+mod gh_perms;
 mod github;
 mod gitops;
 mod infra;
@@ -28,6 +34,7 @@ mod repos;
 mod scheduler;
 mod settings_api;
 mod state;
+mod tailscale;
 mod terminal;
 mod tickets;
 mod transcripts;
@@ -38,9 +45,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::http::{HeaderValue, Method};
+use axum::middleware::from_fn_with_state;
 use axum::{routing::get, Json, Router};
 use serde_json::json;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -62,30 +70,32 @@ async fn main() -> anyhow::Result<()> {
     let pool = db::init(&cfg).await?;
     let (status_tx, _status_rx) = tokio::sync::broadcast::channel::<String>(256);
 
+    // P18/P19: load (or generate + persist) the per-install auth signing key.
+    let auth = Arc::new(auth_session::load_or_create_signing_key(&pool).await?);
+
     let state = AppState {
         db: pool,
         cfg: Arc::new(cfg.clone()),
         status_tx,
+        auth,
     };
 
     scheduler::spawn(state.clone());
 
-    // Explicit local-origin allowlist instead of CorsLayer::permissive(): only
-    // the API port and the Vite dev server on loopback hosts may make
-    // cross-origin requests. (WebSocket Origin enforcement lives in ws_origin.)
-    let allowed_origins: Vec<HeaderValue> = [
-        format!("http://127.0.0.1:{}", cfg.port),
-        format!("http://localhost:{}", cfg.port),
-        "http://127.0.0.1:5173".to_string(),
-        "http://localhost:5173".to_string(),
-    ]
-    .into_iter()
-    .filter_map(|o| HeaderValue::from_str(&o).ok())
-    .collect();
+    // Cross-origin allowlist (P18): loopback (API port + Vite dev server) PLUS
+    // https origins on this Mac's tailnet (`*.tail97ef37.ts.net`), so the SPA
+    // served behind Tailscale serve can call the API with credentials. Anything
+    // else is rejected. (WebSocket Origin enforcement lives in ws_origin.)
     let cors = CorsLayer::new()
-        .allow_origin(allowed_origins)
+        .allow_origin(AllowOrigin::predicate(
+            |origin: &HeaderValue, _req: &_| cors_origin_allowed(origin),
+        ))
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers([axum::http::header::CONTENT_TYPE]);
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
+        .allow_credentials(true);
 
     let app = Router::new()
         .route("/api/health", get(health))
@@ -107,6 +117,19 @@ async fn main() -> anyhow::Result<()> {
         .merge(knowledge::router())
         .merge(evals_gcloud::router())
         .merge(tickets::router())
+        // P18/P19/P20 routers.
+        .merge(auth_google::router())
+        .merge(tailscale::router())
+        .merge(codex::router())
+        .merge(audit::router())
+        .merge(gh_perms::router())
+        // Auth + audit middleware. Layers run outermost-last, so the LAST
+        // `.layer(..)` is the OUTERMOST (runs first on the way in). We want
+        // `gate` to run before `record` so the stamped Principal is visible to
+        // the audit layer — hence `record` is added first (inner) and `gate`
+        // last (outer).
+        .layer(from_fn_with_state(state.clone(), audit::record))
+        .layer(from_fn_with_state(state.clone(), auth_mw::gate))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(cors);
@@ -115,8 +138,43 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("RepoHub backend listening on http://{addr}");
 
-    axum::serve(listener, app).await?;
+    // `into_make_service_with_connect_info` exposes the peer `SocketAddr` via the
+    // `ConnectInfo` extension so the auth gate can classify loopback vs remote.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
+}
+
+/// CORS predicate: allow loopback origins (any port) and https origins on this
+/// Mac's tailnet (`*.tail97ef37.ts.net`). Everything else is rejected.
+fn cors_origin_allowed(origin: &HeaderValue) -> bool {
+    let Ok(o) = origin.to_str() else {
+        return false;
+    };
+    // Loopback (http) on any port — covers the API port and the Vite dev server.
+    if let Some(rest) = o.strip_prefix("http://") {
+        let host = rest.split('/').next().unwrap_or(rest);
+        let hostname = host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host);
+        if hostname == "127.0.0.1" || hostname == "localhost" || hostname == "[::1]" {
+            return true;
+        }
+    }
+    // https on the tailnet. Require the exact suffix on the host (no port: serve
+    // terminates TLS on 443) and reject lookalike suffixes.
+    if let Some(rest) = o.strip_prefix("https://") {
+        let host = rest.split('/').next().unwrap_or(rest);
+        // No explicit port permitted for the tailnet origin.
+        if host.contains(':') {
+            return false;
+        }
+        if host == "tail97ef37.ts.net" || host.ends_with(".tail97ef37.ts.net") {
+            return true;
+        }
+    }
+    false
 }
 
 async fn health() -> Json<serde_json::Value> {

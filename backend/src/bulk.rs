@@ -7,6 +7,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::auth_mw::{self, Principal};
 use crate::claude_runner;
 use crate::error::{ApiResult, AppError};
 use crate::models::{BulkJob, BulkJobItem, Repo};
@@ -25,12 +26,16 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct BulkPromptBody {
     pub repo_ids: Vec<i64>,
     pub prompt: String,
     #[serde(default = "default_kind")]
     pub kind: String,
+    /// Echo of the confirmation token issued on the first (challenged) attempt.
+    /// Only consulted for the Codex principal (P19 destructive-action guard).
+    #[serde(default)]
+    pub confirm_token: Option<String>,
 }
 
 fn default_kind() -> String {
@@ -46,8 +51,27 @@ pub struct BulkJobWithItems {
 
 async fn create_prompt(
     State(state): State<AppState>,
+    principal: Principal,
     Json(body): Json<BulkPromptBody>,
 ) -> ApiResult<Json<BulkJobWithItems>> {
+    // Codex destructive-action guard: a bulk prompt runs `claude` across many
+    // repos and commits. User/Local are exempt; Codex must double-confirm. Hash
+    // the body with `confirm_token` cleared so challenge and retry bind identically.
+    let supplied = body.confirm_token.clone();
+    let mut for_hash = body;
+    for_hash.confirm_token = None;
+    let canonical = serde_json::to_vec(&for_hash).unwrap_or_default();
+    let body = for_hash;
+    auth_mw::require_confirmation_json(
+        &state,
+        &principal,
+        "POST",
+        "/api/bulk/prompt",
+        &canonical,
+        supplied.as_deref(),
+    )
+    .await?;
+
     if body.prompt.trim().is_empty() {
         return Err(AppError::msg("prompt must not be empty"));
     }

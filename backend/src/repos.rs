@@ -2,16 +2,28 @@
 //! and bulk delete (local clone and/or remote).
 
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
 
+use crate::auth_mw::{self, Principal};
 use crate::error::{ApiResult, AppError};
 use crate::models::Repo;
 use crate::state::AppState;
 use crate::{github, gitops};
+
+use sha2::{Digest, Sha256};
+
+/// SHA-256 (lowercase hex) of a request body — bound into the Codex destructive
+/// confirmation token so a confirmation can only authorize the exact payload.
+fn body_hash(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    hex::encode(h.finalize())
+}
 
 const STAGING_BRANCH: &str = "repohub-staging";
 
@@ -159,16 +171,37 @@ async fn recompute_status(state: &AppState, id: i64) -> ApiResult<Repo> {
 // POST /api/repos/:id/track
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TrackBody {
     pub tracked: bool,
+    /// Echo of the confirmation token issued on the first (challenged) attempt.
+    /// Only consulted for the Codex principal (P19 destructive-action guard).
+    #[serde(default)]
+    pub confirm_token: Option<String>,
 }
 
 async fn track_repo(
     State(state): State<AppState>,
+    principal: Principal,
     Path(id): Path<i64>,
     Json(body): Json<TrackBody>,
 ) -> ApiResult<Json<Repo>> {
+    // Tracking can trigger a clone (writes to disk). Codex must double-confirm.
+    let supplied = body.confirm_token.clone();
+    let mut for_hash = body;
+    for_hash.confirm_token = None;
+    let canonical = serde_json::to_vec(&for_hash).unwrap_or_default();
+    let body = for_hash;
+    auth_mw::require_confirmation_json(
+        &state,
+        &principal,
+        "POST",
+        &format!("/api/repos/{id}/track"),
+        &canonical,
+        supplied.as_deref(),
+    )
+    .await?;
+
     let repo = fetch_repo(&state, id).await?;
 
     sqlx::query("UPDATE repos SET tracked = ?1, updated_at = ?2 WHERE id = ?3")
@@ -204,8 +237,19 @@ async fn track_repo(
 
 async fn clone_repo(
     State(state): State<AppState>,
+    principal: Principal,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Repo>> {
+    auth_mw::require_confirmation_pathonly(
+        &state,
+        &principal,
+        "POST",
+        &format!("/api/repos/{id}/clone"),
+        auth_mw::confirm_token_header(&headers).as_deref(),
+    )
+    .await?;
+
     let repo = fetch_repo(&state, id).await?;
     do_clone(&state, &repo).await?;
     let updated = recompute_status(&state, id).await?;
@@ -219,8 +263,19 @@ async fn clone_repo(
 
 async fn pull_repo(
     State(state): State<AppState>,
+    principal: Principal,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Repo>> {
+    auth_mw::require_confirmation_pathonly(
+        &state,
+        &principal,
+        "POST",
+        &format!("/api/repos/{id}/pull"),
+        auth_mw::confirm_token_header(&headers).as_deref(),
+    )
+    .await?;
+
     let repo = fetch_repo(&state, id).await?;
     if let Some(lp) = &repo.local_path {
         gitops::pull(&PathBuf::from(lp)).await.map_err(AppError::Anyhow)?;
@@ -293,19 +348,45 @@ async fn refresh_status(
 // DELETE /api/repos
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct DeleteBody {
     pub ids: Vec<i64>,
     #[serde(default)]
     pub delete_local: bool,
     #[serde(default)]
     pub delete_remote: bool,
+    /// Echo of the confirmation token issued on the first (challenged) attempt.
+    /// Only consulted for the Codex principal (P19 destructive-action guard).
+    #[serde(default)]
+    pub confirm_token: Option<String>,
 }
 
 async fn delete_repos(
     State(state): State<AppState>,
+    principal: Principal,
     Json(body): Json<DeleteBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    // Codex destructive-action guard: User/Local are exempt; Codex must present a
+    // valid confirmation token bound to this exact request body.
+    //
+    // CRITICAL: hash the body with `confirm_token` cleared, so the challenge
+    // (token=None) and the retry (token=Some) bind to the SAME hash. Hashing the
+    // body *including* the echoed token would make the retry re-challenge forever.
+    let supplied = body.confirm_token.clone();
+    let mut for_hash = body;
+    for_hash.confirm_token = None;
+    let bh = body_hash(serde_json::to_vec(&for_hash).unwrap_or_default().as_slice());
+    let body = for_hash;
+    auth_mw::require_confirmation(
+        &state,
+        &principal,
+        "DELETE",
+        "/api/repos",
+        &bh,
+        supplied.as_deref(),
+    )
+    .await?;
+
     let mut deleted = Vec::new();
 
     for id in &body.ids {

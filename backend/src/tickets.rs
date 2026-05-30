@@ -15,6 +15,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
+use crate::auth_mw::{self, Principal};
 use crate::error::{ApiResult, AppError};
 use crate::state::AppState;
 
@@ -265,7 +266,7 @@ async fn list_repo_issues(repo: &str, state_filter: &str) -> anyhow::Result<Vec<
 // POST /api/tickets — create an issue
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateBody {
     pub repo: String,
     pub title: String,
@@ -273,13 +274,34 @@ pub struct CreateBody {
     pub body: Option<String>,
     #[serde(default)]
     pub labels: Vec<String>,
+    /// Echo of the confirmation token issued on the first (challenged) attempt.
+    /// Only consulted for the Codex principal (P19 destructive-action guard).
+    #[serde(default)]
+    pub confirm_token: Option<String>,
 }
 
 async fn create_ticket(
     State(state): State<AppState>,
+    principal: Principal,
     Json(body): Json<CreateBody>,
 ) -> ApiResult<Json<Ticket>> {
-    let _ = &state; // state unused beyond router wiring; kept for signature parity
+    // Codex destructive-action guard: creating a real GitHub issue. User/Local are
+    // exempt; Codex must double-confirm (hash with `confirm_token` cleared).
+    let supplied = body.confirm_token.clone();
+    let mut for_hash = body;
+    for_hash.confirm_token = None;
+    let canonical = serde_json::to_vec(&for_hash).unwrap_or_default();
+    let body = for_hash;
+    auth_mw::require_confirmation_json(
+        &state,
+        &principal,
+        "POST",
+        "/api/tickets",
+        &canonical,
+        supplied.as_deref(),
+    )
+    .await?;
+
     let repo = body.repo.trim();
     validate_repo(repo)?;
     if body.title.trim().is_empty() {
@@ -347,18 +369,39 @@ fn parse_issue_number(url: &str) -> Option<i64> {
 // POST /api/tickets/:repo_owner/:repo_name/:number/comment
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CommentBody {
     pub body: String,
+    /// Echo of the confirmation token issued on the first (challenged) attempt.
+    /// Only consulted for the Codex principal (P19 destructive-action guard).
+    #[serde(default)]
+    pub confirm_token: Option<String>,
 }
 
 async fn comment_ticket(
     State(state): State<AppState>,
+    principal: Principal,
     Path((repo_owner, repo_name, number)): Path<(String, String, i64)>,
     Json(body): Json<CommentBody>,
 ) -> ApiResult<Json<Ticket>> {
-    let _ = &state;
     let repo = format!("{repo_owner}/{repo_name}");
+    // Codex destructive-action guard (writes a real GitHub comment). Bind to the
+    // concrete path so a confirmation cannot be replayed against another issue.
+    let supplied = body.confirm_token.clone();
+    let mut for_hash = body;
+    for_hash.confirm_token = None;
+    let canonical = serde_json::to_vec(&for_hash).unwrap_or_default();
+    let body = for_hash;
+    auth_mw::require_confirmation_json(
+        &state,
+        &principal,
+        "POST",
+        &format!("/api/tickets/{repo}/{number}/comment"),
+        &canonical,
+        supplied.as_deref(),
+    )
+    .await?;
+
     validate_repo(&repo)?;
     if body.body.trim().is_empty() {
         return Err(AppError::msg("comment body is required"));
@@ -398,7 +441,7 @@ async fn comment_ticket(
 // POST /api/tickets/:repo_owner/:repo_name/:number/state
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct StateBody {
     /// `"closed"` or `"open"`.
     pub state: String,
@@ -406,15 +449,35 @@ pub struct StateBody {
     pub labels_add: Vec<String>,
     #[serde(default)]
     pub labels_remove: Vec<String>,
+    /// Echo of the confirmation token issued on the first (challenged) attempt.
+    /// Only consulted for the Codex principal (P19 destructive-action guard).
+    #[serde(default)]
+    pub confirm_token: Option<String>,
 }
 
 async fn set_ticket_state(
     State(state): State<AppState>,
+    principal: Principal,
     Path((repo_owner, repo_name, number)): Path<(String, String, i64)>,
     Json(body): Json<StateBody>,
 ) -> ApiResult<Json<Ticket>> {
-    let _ = &state;
     let repo = format!("{repo_owner}/{repo_name}");
+    // Codex destructive-action guard (closes/reopens/edits a real GitHub issue).
+    let supplied = body.confirm_token.clone();
+    let mut for_hash = body;
+    for_hash.confirm_token = None;
+    let canonical = serde_json::to_vec(&for_hash).unwrap_or_default();
+    let body = for_hash;
+    auth_mw::require_confirmation_json(
+        &state,
+        &principal,
+        "POST",
+        &format!("/api/tickets/{repo}/{number}/state"),
+        &canonical,
+        supplied.as_deref(),
+    )
+    .await?;
+
     validate_repo(&repo)?;
     let number_s = number.to_string();
 

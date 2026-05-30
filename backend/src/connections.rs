@@ -13,6 +13,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+use crate::auth_mw::{self, Principal};
 use crate::error::{ApiResult, AppError};
 use crate::models::Repo;
 use crate::state::AppState;
@@ -109,11 +110,15 @@ async fn graph(State(state): State<AppState>) -> ApiResult<Json<Vec<GraphNode>>>
 // POST /api/connections/integrate
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct IntegrateBody {
     pub source_id: i64,
     pub target_id: i64,
     pub instruction: String,
+    /// Echo of the confirmation token issued on the first (challenged) attempt.
+    /// Only consulted for the Codex principal (P19 destructive-action guard).
+    #[serde(default)]
+    pub confirm_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -150,8 +155,28 @@ fn short_instruction(instruction: &str) -> String {
 
 async fn integrate(
     State(state): State<AppState>,
+    principal: Principal,
     Json(body): Json<IntegrateBody>,
 ) -> ApiResult<Json<IntegrateResult>> {
+    // Codex destructive-action guard: integrate runs an arbitrary `claude` agent
+    // inside the target repo and commits — the most powerful Codex-reachable HTTP
+    // surface. User/Local are exempt; Codex must double-confirm. Hash the body with
+    // `confirm_token` cleared so challenge and retry bind to the same hash.
+    let supplied = body.confirm_token.clone();
+    let mut for_hash = body;
+    for_hash.confirm_token = None;
+    let canonical = serde_json::to_vec(&for_hash).unwrap_or_default();
+    let body = for_hash;
+    auth_mw::require_confirmation_json(
+        &state,
+        &principal,
+        "POST",
+        "/api/connections/integrate",
+        &canonical,
+        supplied.as_deref(),
+    )
+    .await?;
+
     let instruction = body.instruction.trim().to_string();
     if instruction.is_empty() {
         return Err(AppError::msg("instruction is required"));

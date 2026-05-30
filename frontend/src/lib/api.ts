@@ -21,6 +21,20 @@ import type {
   SuggestResponse,
   ApplySuggestionBody,
   ApplySuggestionResponse,
+  AuthStatus,
+  AuthConfigBody,
+  AuthConfigResult,
+  SessionRow,
+  TsStatus,
+  TsEnableResult,
+  TsDisableResult,
+  CodexState,
+  CodexConfigBody,
+  CodexCredential,
+  IssuedToken,
+  AuditEntry,
+  PermissionsReport,
+  AnalyzeResponse,
 } from "./types";
 
 // ---- low-level helper ----
@@ -175,3 +189,85 @@ export const reindexTranscripts = () =>
 
 export const transcriptStatus = () =>
   get<TranscriptStatus>("/api/transcripts/status");
+
+// ---- auth.rs / auth_api.rs ----
+
+export const getAuthStatus = () => get<AuthStatus>("/api/auth/status");
+
+// Returns AuthStatusConfig (the 3 editable fields), not the full AuthStatus.
+export const putAuthConfig = (body: AuthConfigBody) =>
+  put<AuthConfigResult>("/api/auth/config", body);
+
+export const logout = () => post<void>("/api/auth/logout");
+
+export const listSessions = (email?: string) =>
+  get<SessionRow[]>(`/api/auth/sessions${qs({ email })}`);
+
+// Backend: POST /api/auth/sessions/:id/revoke (NOT DELETE /api/auth/sessions/:id).
+export const revokeSession = (id: number) =>
+  post<{ revoked: number }>(`/api/auth/sessions/${id}/revoke`);
+
+// ---- tailscale.rs ----
+
+export const getTailscale = () => get<TsStatus>("/api/tailscale");
+
+// Returns { status, funnel_warning }.
+export const enableTailscaleServe = () =>
+  post<TsEnableResult>("/api/tailscale/serve/enable");
+
+// Returns { status }.
+export const disableTailscaleServe = () =>
+  post<TsDisableResult>("/api/tailscale/serve/disable");
+
+// ---- codex.rs ----
+
+export const getCodex = () => get<CodexState>("/api/codex");
+
+export const putCodex = (body: CodexConfigBody) =>
+  put<CodexState>("/api/codex", body);
+
+// Backend: POST /api/codex/token (SINGULAR). Returns { token, credential, warning }.
+export const issueCodexToken = (label?: string) =>
+  post<IssuedToken>("/api/codex/token", { label });
+
+export const killCodex = () =>
+  post<{ killed: boolean; enabled: boolean }>("/api/codex/kill");
+
+export const listCodexCredentials = () =>
+  get<CodexCredential[]>("/api/codex/credentials");
+
+// Backend: POST /api/codex/credentials/:id/revoke (NOT DELETE).
+export const revokeCodexCredential = (id: number) =>
+  post<{ id: number; revoked: boolean }>(
+    `/api/codex/credentials/${id}/revoke`,
+  );
+
+// ---- audit.rs ----
+
+// Backend AuditQuery reads `actor`, `method`, `path`, `limit`, and `since`
+// (RFC3339); there is no `before` cursor.
+export const listAudit = (opts?: {
+  actor?: string;
+  method?: string;
+  path?: string;
+  limit?: number;
+  since?: string;
+}) =>
+  get<AuditEntry[]>(
+    `/api/audit${qs({
+      actor: opts?.actor,
+      method: opts?.method,
+      path: opts?.path,
+      limit: opts?.limit,
+      since: opts?.since,
+    })}`,
+  );
+
+// ---- gh_perms.rs ----
+
+export const getPermissions = () =>
+  get<PermissionsReport>("/api/permissions");
+
+// Returns { summary, error?, raw } — NOT a bare PermissionsReport.
+export const analyzePermissions = () =>
+  post<AnalyzeResponse>("/api/permissions/analyze");
