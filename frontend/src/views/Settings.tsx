@@ -23,6 +23,221 @@ import type {
   SuggestedFile,
 } from "../lib/types";
 
+// New P16 config sections (separate units; default exports).
+import Runtime from "./config/Runtime";
+import Agents from "./config/Agents";
+import Mcp from "./config/Mcp";
+import Knowledge from "./config/Knowledge";
+import AiOps from "./config/AiOps";
+import GoogleCloud from "./config/GoogleCloud";
+
+// ---------------------------------------------------------------------------
+// Settings shell (P16)
+//
+// A unified, layered Settings hub. A left sub-nav switches between sections; a
+// scope toggle at the top selects the layer the section operates on:
+//   - "global": the user's real ~/.claude config (applied live)
+//   - "repo":   a per-repo override that inherits global when unset
+//
+// The new config sections (Runtime/Agents/MCP/Knowledge/AI Ops/Google Cloud)
+// are separate components that read the current scope via {scope, repoId} props.
+// The original sections (Preferences, Infrastructure, Suggest) are preserved
+// verbatim as local sub-tab components below.
+// ---------------------------------------------------------------------------
+
+// Layer the active section operates on. Shared with the section components so
+// sibling units import a single source of truth for the props contract.
+export type Scope = "global" | "repo";
+
+// Props every config section receives. When scope === "repo", repoId is the
+// selected repository (or null if none chosen yet); for "global" it is null.
+export interface SectionProps {
+  scope: Scope;
+  repoId: number | null;
+}
+
+type SectionKey =
+  | "preferences"
+  | "infrastructure"
+  | "suggest"
+  | "runtime"
+  | "agents"
+  | "mcp"
+  | "knowledge"
+  | "aiops"
+  | "googlecloud";
+
+type SectionDef = {
+  key: SectionKey;
+  label: string;
+  // Sections that operate on a config layer honor the scope toggle; the legacy
+  // sections are scope-agnostic and hide the toggle when active.
+  scoped: boolean;
+};
+
+const SECTIONS: SectionDef[] = [
+  { key: "runtime", label: "Runtime", scoped: true },
+  { key: "agents", label: "Agents", scoped: true },
+  { key: "mcp", label: "MCP", scoped: true },
+  { key: "knowledge", label: "Knowledge", scoped: true },
+  { key: "aiops", label: "AI Ops", scoped: true },
+  { key: "googlecloud", label: "Google Cloud", scoped: false },
+  { key: "preferences", label: "Preferences", scoped: false },
+  { key: "infrastructure", label: "Infrastructure", scoped: false },
+  { key: "suggest", label: "Suggest", scoped: false },
+];
+
+export default function Settings() {
+  const [active, setActive] = useState<SectionKey>("runtime");
+
+  // ---- scope toggle (shared across scoped sections) ----
+  const [scope, setScope] = useState<Scope>("global");
+  const [scopeRepoId, setScopeRepoId] = useState<number | "">("");
+
+  // Repo list backs both the scope picker and the Suggest section.
+  const [repos, setRepos] = useState<Repo[] | null>(null);
+  const [reposLoading, setReposLoading] = useState(true);
+  const [reposError, setReposError] = useState<string | null>(null);
+
+  const loadRepos = useCallback(() => {
+    setReposLoading(true);
+    setReposError(null);
+    listRepos()
+      .then(setRepos)
+      .catch((e) => setReposError(String(e instanceof Error ? e.message : e)))
+      .finally(() => setReposLoading(false));
+  }, []);
+
+  useEffect(() => {
+    loadRepos();
+  }, [loadRepos]);
+
+  const activeDef = SECTIONS.find((s) => s.key === active)!;
+  const repoId =
+    scope === "repo" && scopeRepoId !== "" ? Number(scopeRepoId) : null;
+  const sectionProps: SectionProps = { scope, repoId };
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+        <p className="mt-1 text-sm text-slate-400">
+          A unified hub for Claude Code configuration. Global defaults apply
+          live to your <code className="text-slate-400">~/.claude</code> config;
+          per-repo overrides inherit global when unset and land on the{" "}
+          <span className="text-accent">repohub-staging</span> branch for review.
+        </p>
+      </div>
+
+      {/* ---- scope toggle (only for scoped sections) ---- */}
+      {activeDef.scoped && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-edge bg-panel px-4 py-3">
+          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            Layer
+          </span>
+          <div className="inline-flex overflow-hidden rounded-md border border-edge">
+            <button
+              onClick={() => setScope("global")}
+              className={`px-3 py-1.5 text-sm transition ${
+                scope === "global"
+                  ? "bg-accent/20 text-accent"
+                  : "text-slate-400 hover:bg-edge hover:text-slate-200"
+              }`}
+            >
+              Global default
+            </button>
+            <button
+              onClick={() => setScope("repo")}
+              className={`border-l border-edge px-3 py-1.5 text-sm transition ${
+                scope === "repo"
+                  ? "bg-accent/20 text-accent"
+                  : "text-slate-400 hover:bg-edge hover:text-slate-200"
+              }`}
+            >
+              Per-repo override
+            </button>
+          </div>
+
+          {scope === "repo" &&
+            (reposLoading ? (
+              <span className="text-sm text-slate-400">Loading repos…</span>
+            ) : reposError ? (
+              <span className="text-sm text-rose-400">{reposError}</span>
+            ) : (
+              <select
+                value={scopeRepoId}
+                onChange={(e) =>
+                  setScopeRepoId(
+                    e.target.value === "" ? "" : Number(e.target.value),
+                  )
+                }
+                className="rounded-md border border-edge bg-slate-900/60 px-3 py-1.5 text-sm text-slate-200 outline-none focus:border-accent"
+              >
+                <option value="">Select a repo…</option>
+                {(repos ?? []).map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.full_name}
+                    {r.local_path ? "" : " (not cloned)"}
+                  </option>
+                ))}
+              </select>
+            ))}
+
+          <span className="ml-auto text-xs text-slate-500">
+            {scope === "global"
+              ? "Applies live to ~/.claude"
+              : repoId !== null
+                ? "Overrides land on repohub-staging"
+                : "Pick a repo to edit overrides"}
+          </span>
+        </div>
+      )}
+
+      {/* ---- shell: left sub-nav + active section ---- */}
+      <div className="flex flex-col gap-6 md:flex-row">
+        <nav className="flex shrink-0 flex-row flex-wrap gap-1 md:w-48 md:flex-col">
+          {SECTIONS.map((s) => (
+            <button
+              key={s.key}
+              onClick={() => setActive(s.key)}
+              className={`rounded-md px-3 py-2 text-left text-sm transition ${
+                active === s.key
+                  ? "bg-accent/20 text-accent"
+                  : "text-slate-400 hover:bg-edge hover:text-slate-200"
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="min-w-0 flex-1 space-y-6">
+          {active === "runtime" && <Runtime {...sectionProps} />}
+          {active === "agents" && <Agents {...sectionProps} />}
+          {active === "mcp" && <Mcp {...sectionProps} />}
+          {active === "knowledge" && <Knowledge {...sectionProps} />}
+          {active === "aiops" && <AiOps {...sectionProps} />}
+          {active === "googlecloud" && <GoogleCloud />}
+
+          {active === "preferences" && <PreferencesSection />}
+          {active === "infrastructure" && <InfrastructureSection />}
+          {active === "suggest" && (
+            <SuggestSection
+              repos={repos}
+              reposLoading={reposLoading}
+              reposError={reposError}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ===========================================================================
+// Preserved section: Preferences
+// ===========================================================================
+
 const LANGUAGE_OPTIONS = [
   "Rust",
   "TypeScript",
@@ -46,64 +261,13 @@ const CLOUD_OPTIONS = [
   "Self-hosted",
 ];
 
-const INFRA_KINDS = ["ssh", "vps", "database", "storage", "k8s", "other"];
-
-const EMPTY_INFRA: CreateInfraBody = {
-  name: "",
-  kind: "ssh",
-  host: "",
-  port: 22,
-  username: "",
-  base_path: "",
-  notes: "",
-};
-
-type Banner = { kind: "ok" | "err"; text: string } | null;
-
-export default function Settings() {
-  // ---- Preferences ----
+function PreferencesSection() {
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [prefsLoading, setPrefsLoading] = useState(true);
   const [prefsError, setPrefsError] = useState<string | null>(null);
   const [prefsSaving, setPrefsSaving] = useState(false);
   const [prefsBanner, setPrefsBanner] = useState<Banner>(null);
 
-  // ---- Infra ----
-  const [infra, setInfra] = useState<InfraResource[] | null>(null);
-  const [infraLoading, setInfraLoading] = useState(true);
-  const [infraError, setInfraError] = useState<string | null>(null);
-  const [draft, setDraft] = useState<CreateInfraBody>(EMPTY_INFRA);
-  const [creating, setCreating] = useState(false);
-  const [infraBanner, setInfraBanner] = useState<Banner>(null);
-  const [busyInfra, setBusyInfra] = useState<Record<number, "test" | "delete">>(
-    {},
-  );
-  const [testResults, setTestResults] = useState<
-    Record<number, InfraTestResult>
-  >({});
-
-  // ---- General settings (free-form global key/value rows) ----
-  const [settings, setSettings] = useState<Setting[] | null>(null);
-  const [settingsLoading, setSettingsLoading] = useState(true);
-  const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [newKey, setNewKey] = useState("");
-  const [newVal, setNewVal] = useState("");
-  const [settingSaving, setSettingSaving] = useState(false);
-  const [settingsBanner, setSettingsBanner] = useState<Banner>(null);
-
-  // ---- Suggest settings (AI) ----
-  const [repos, setRepos] = useState<Repo[] | null>(null);
-  const [reposLoading, setReposLoading] = useState(true);
-  const [reposError, setReposError] = useState<string | null>(null);
-  const [suggestRepoId, setSuggestRepoId] = useState<number | "">("");
-  const [suggesting, setSuggesting] = useState(false);
-  const [suggestion, setSuggestion] = useState<SuggestResponse | null>(null);
-  const [suggestRepoName, setSuggestRepoName] = useState<string>("");
-  const [checked, setChecked] = useState<Record<string, boolean>>({});
-  const [applying, setApplying] = useState(false);
-  const [suggestBanner, setSuggestBanner] = useState<Banner>(null);
-
-  // ---- loaders ----
   const loadPrefs = useCallback(() => {
     setPrefsLoading(true);
     setPrefsError(null);
@@ -113,43 +277,10 @@ export default function Settings() {
       .finally(() => setPrefsLoading(false));
   }, []);
 
-  const loadInfra = useCallback(() => {
-    setInfraLoading(true);
-    setInfraError(null);
-    listInfra()
-      .then(setInfra)
-      .catch((e) => setInfraError(String(e instanceof Error ? e.message : e)))
-      .finally(() => setInfraLoading(false));
-  }, []);
-
-  const loadSettings = useCallback(() => {
-    setSettingsLoading(true);
-    setSettingsError(null);
-    getSettings("global")
-      .then(setSettings)
-      .catch((e) =>
-        setSettingsError(String(e instanceof Error ? e.message : e)),
-      )
-      .finally(() => setSettingsLoading(false));
-  }, []);
-
-  const loadRepos = useCallback(() => {
-    setReposLoading(true);
-    setReposError(null);
-    listRepos()
-      .then(setRepos)
-      .catch((e) => setReposError(String(e instanceof Error ? e.message : e)))
-      .finally(() => setReposLoading(false));
-  }, []);
-
   useEffect(() => {
     loadPrefs();
-    loadInfra();
-    loadSettings();
-    loadRepos();
-  }, [loadPrefs, loadInfra, loadSettings, loadRepos]);
+  }, [loadPrefs]);
 
-  // ---- prefs handlers ----
   const setPref = (key: string, value: string) =>
     setPrefs((p) => (p ? { ...p, [key]: value } : p));
 
@@ -174,7 +305,135 @@ export default function Settings() {
     }
   };
 
-  // ---- infra handlers ----
+  return (
+    <section className="rounded-xl border border-edge bg-panel p-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Preferences</h2>
+        <button
+          onClick={savePrefs}
+          disabled={prefsSaving || prefsLoading || !prefs}
+          className="rounded-md bg-accent/20 px-3 py-1.5 text-sm text-accent transition hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {prefsSaving ? "Saving…" : "Save preferences"}
+        </button>
+      </div>
+      <p className="mt-1 text-xs text-slate-500">
+        These suggest defaults for Claude features and migrations — they never
+        force a choice.
+      </p>
+
+      {prefsLoading ? (
+        <p className="mt-4 text-sm text-slate-400">Loading preferences…</p>
+      ) : prefsError ? (
+        <ErrorRow text={prefsError} onRetry={loadPrefs} />
+      ) : prefs ? (
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-slate-400">
+              Preferred language
+            </span>
+            <input
+              list="pref-languages"
+              value={prefs.pref_languages}
+              onChange={(e) => setPref("pref_languages", e.target.value)}
+              className="rounded-md border border-edge bg-slate-900/60 px-3 py-2 text-sm text-slate-200 outline-none focus:border-accent"
+            />
+            <datalist id="pref-languages">
+              {LANGUAGE_OPTIONS.map((l) => (
+                <option key={l} value={l} />
+              ))}
+            </datalist>
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-slate-400">
+              Preferred cloud
+            </span>
+            <input
+              list="pref-clouds"
+              value={prefs.pref_cloud}
+              onChange={(e) => setPref("pref_cloud", e.target.value)}
+              className="rounded-md border border-edge bg-slate-900/60 px-3 py-2 text-sm text-slate-200 outline-none focus:border-accent"
+            />
+            <datalist id="pref-clouds">
+              {CLOUD_OPTIONS.map((c) => (
+                <option key={c} value={c} />
+              ))}
+            </datalist>
+          </label>
+        </div>
+      ) : null}
+
+      {prefsBanner && <BannerRow banner={prefsBanner} />}
+    </section>
+  );
+}
+
+// ===========================================================================
+// Preserved section: Infrastructure registry + General settings
+// ===========================================================================
+
+const INFRA_KINDS = ["ssh", "vps", "database", "storage", "k8s", "other"];
+
+const EMPTY_INFRA: CreateInfraBody = {
+  name: "",
+  kind: "ssh",
+  host: "",
+  port: 22,
+  username: "",
+  base_path: "",
+  notes: "",
+};
+
+function InfrastructureSection() {
+  // ---- Infra ----
+  const [infra, setInfra] = useState<InfraResource[] | null>(null);
+  const [infraLoading, setInfraLoading] = useState(true);
+  const [infraError, setInfraError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<CreateInfraBody>(EMPTY_INFRA);
+  const [creating, setCreating] = useState(false);
+  const [infraBanner, setInfraBanner] = useState<Banner>(null);
+  const [busyInfra, setBusyInfra] = useState<Record<number, "test" | "delete">>(
+    {},
+  );
+  const [testResults, setTestResults] = useState<
+    Record<number, InfraTestResult>
+  >({});
+
+  // ---- General settings (free-form global key/value rows) ----
+  const [settings, setSettings] = useState<Setting[] | null>(null);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [newKey, setNewKey] = useState("");
+  const [newVal, setNewVal] = useState("");
+  const [settingSaving, setSettingSaving] = useState(false);
+  const [settingsBanner, setSettingsBanner] = useState<Banner>(null);
+
+  const loadInfra = useCallback(() => {
+    setInfraLoading(true);
+    setInfraError(null);
+    listInfra()
+      .then(setInfra)
+      .catch((e) => setInfraError(String(e instanceof Error ? e.message : e)))
+      .finally(() => setInfraLoading(false));
+  }, []);
+
+  const loadSettings = useCallback(() => {
+    setSettingsLoading(true);
+    setSettingsError(null);
+    getSettings("global")
+      .then(setSettings)
+      .catch((e) =>
+        setSettingsError(String(e instanceof Error ? e.message : e)),
+      )
+      .finally(() => setSettingsLoading(false));
+  }, []);
+
+  useEffect(() => {
+    loadInfra();
+    loadSettings();
+  }, [loadInfra, loadSettings]);
+
   const createResource = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!draft.name.trim() || !draft.host.trim()) {
@@ -249,7 +508,6 @@ export default function Settings() {
     }
   };
 
-  // ---- general setting handler ----
   const addSetting = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newKey.trim()) {
@@ -284,166 +542,8 @@ export default function Settings() {
     }
   };
 
-  // ---- suggest-settings handlers ----
-  // Flatten a suggestion into the concrete files we can apply, keyed by path.
-  const suggestedFiles: SuggestedFile[] = useMemo(() => {
-    if (!suggestion) return [];
-    const files: SuggestedFile[] = [];
-    if (suggestion.claude_md.trim())
-      files.push({ path: "CLAUDE.md", content: suggestion.claude_md });
-    if (suggestion.settings_json.trim())
-      files.push({
-        path: ".claude/settings.json",
-        content: suggestion.settings_json,
-      });
-    for (const dc of suggestion.dev_configs) {
-      if (dc.path.trim()) files.push(dc);
-    }
-    return files;
-  }, [suggestion]);
-
-  const runSuggest = async () => {
-    if (suggestRepoId === "") {
-      setSuggestBanner({ kind: "err", text: "Pick a repository first." });
-      return;
-    }
-    setSuggesting(true);
-    setSuggestBanner(null);
-    setSuggestion(null);
-    setChecked({});
-    const repoId = Number(suggestRepoId);
-    const repoName =
-      repos?.find((r) => r.id === repoId)?.full_name ?? `repo ${repoId}`;
-    setSuggestRepoName(repoName);
-    try {
-      const res = await suggestSettings({ repo_id: repoId });
-      setSuggestion(res);
-      // Default every proposed file to checked.
-      const next: Record<string, boolean> = {};
-      if (res.claude_md.trim()) next["CLAUDE.md"] = true;
-      if (res.settings_json.trim()) next[".claude/settings.json"] = true;
-      for (const dc of res.dev_configs) {
-        if (dc.path.trim()) next[dc.path] = true;
-      }
-      setChecked(next);
-      setSuggestBanner({
-        kind: "ok",
-        text: `Suggestion ready for "${repoName}". Review the files below.`,
-      });
-    } catch (err) {
-      setSuggestBanner({
-        kind: "err",
-        text: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setSuggesting(false);
-    }
-  };
-
-  const applySelected = async () => {
-    if (suggestRepoId === "" || !suggestion) return;
-    const files = suggestedFiles.filter((f) => checked[f.path]);
-    if (files.length === 0) {
-      setSuggestBanner({ kind: "err", text: "Select at least one file." });
-      return;
-    }
-    setApplying(true);
-    setSuggestBanner(null);
-    try {
-      const res = await applySuggestion({
-        repo_id: Number(suggestRepoId),
-        files,
-      });
-      setSuggestBanner({
-        kind: "ok",
-        text: res.ok
-          ? `Applied ${files.length} file${files.length === 1 ? "" : "s"} to branch "${res.branch}". Review and open a PR to merge.`
-          : "Apply reported failure.",
-      });
-    } catch (err) {
-      setSuggestBanner({
-        kind: "err",
-        text: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setApplying(false);
-    }
-  };
-
-  const checkedCount = suggestedFiles.filter((f) => checked[f.path]).length;
-
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          Preferences, infrastructure registry, and general configuration.
-        </p>
-      </div>
-
-      {/* ---- Preferences ---- */}
-      <section className="rounded-xl border border-edge bg-panel p-6">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Preferences</h2>
-          <button
-            onClick={savePrefs}
-            disabled={prefsSaving || prefsLoading || !prefs}
-            className="rounded-md bg-accent/20 px-3 py-1.5 text-sm text-accent transition hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {prefsSaving ? "Saving…" : "Save preferences"}
-          </button>
-        </div>
-        <p className="mt-1 text-xs text-slate-500">
-          These suggest defaults for Claude features and migrations — they never
-          force a choice.
-        </p>
-
-        {prefsLoading ? (
-          <p className="mt-4 text-sm text-slate-400">Loading preferences…</p>
-        ) : prefsError ? (
-          <ErrorRow text={prefsError} onRetry={loadPrefs} />
-        ) : prefs ? (
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-slate-400">
-                Preferred language
-              </span>
-              <input
-                list="pref-languages"
-                value={prefs.pref_languages}
-                onChange={(e) => setPref("pref_languages", e.target.value)}
-                className="rounded-md border border-edge bg-slate-900/60 px-3 py-2 text-sm text-slate-200 outline-none focus:border-accent"
-              />
-              <datalist id="pref-languages">
-                {LANGUAGE_OPTIONS.map((l) => (
-                  <option key={l} value={l} />
-                ))}
-              </datalist>
-            </label>
-
-            <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-slate-400">
-                Preferred cloud
-              </span>
-              <input
-                list="pref-clouds"
-                value={prefs.pref_cloud}
-                onChange={(e) => setPref("pref_cloud", e.target.value)}
-                className="rounded-md border border-edge bg-slate-900/60 px-3 py-2 text-sm text-slate-200 outline-none focus:border-accent"
-              />
-              <datalist id="pref-clouds">
-                {CLOUD_OPTIONS.map((c) => (
-                  <option key={c} value={c} />
-                ))}
-              </datalist>
-            </label>
-          </div>
-        ) : null}
-
-        {prefsBanner && <BannerRow banner={prefsBanner} />}
-      </section>
-
-      {/* ---- Infra registry ---- */}
+    <>
       <section className="rounded-xl border border-edge bg-panel p-6">
         <h2 className="text-lg font-semibold">Infrastructure registry</h2>
         <p className="mt-1 text-xs text-slate-500">
@@ -684,116 +784,226 @@ export default function Settings() {
           )}
         </div>
       </section>
+    </>
+  );
+}
 
-      {/* ---- Suggest settings (AI) ---- */}
-      <section className="rounded-xl border border-edge bg-panel p-6">
-        <h2 className="text-lg font-semibold">Suggest settings (AI)</h2>
-        <p className="mt-1 text-xs text-slate-500">
-          Ask Claude to propose a <code className="text-slate-400">CLAUDE.md</code>,{" "}
-          <code className="text-slate-400">.claude/settings.json</code>, and dev
-          config for a repo. Nothing is written until you apply — selected files
-          land on the <span className="text-accent">repohub-staging</span> branch
-          for you to review and merge.
-        </p>
+// ===========================================================================
+// Preserved section: Suggest settings (AI)
+// ===========================================================================
 
-        <div className="mt-4 flex flex-wrap items-end gap-3">
-          <Field label="Repository">
-            {reposLoading ? (
-              <span className="px-1 py-2 text-sm text-slate-400">
-                Loading repos…
-              </span>
-            ) : reposError ? (
-              <span className="px-1 py-2 text-sm text-rose-400">
-                {reposError}
-              </span>
-            ) : (
-              <select
-                value={suggestRepoId}
-                onChange={(e) =>
-                  setSuggestRepoId(
-                    e.target.value === "" ? "" : Number(e.target.value),
-                  )
-                }
-                className={inputCls}
-              >
-                <option value="">Select a repo…</option>
-                {(repos ?? []).map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.full_name}
-                    {r.local_path ? "" : " (not cloned)"}
-                  </option>
-                ))}
-              </select>
-            )}
-          </Field>
-          <button
-            onClick={runSuggest}
-            disabled={suggesting || suggestRepoId === ""}
-            className="rounded-md bg-accent/20 px-4 py-2 text-sm text-accent transition hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {suggesting ? "Asking Claude…" : "Suggest"}
-          </button>
-          {suggesting && (
-            <span className="text-xs text-slate-500">
-              This calls Claude and may take a while.
+function SuggestSection({
+  repos,
+  reposLoading,
+  reposError,
+}: {
+  repos: Repo[] | null;
+  reposLoading: boolean;
+  reposError: string | null;
+}) {
+  const [suggestRepoId, setSuggestRepoId] = useState<number | "">("");
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestion, setSuggestion] = useState<SuggestResponse | null>(null);
+  const [suggestRepoName, setSuggestRepoName] = useState<string>("");
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const [applying, setApplying] = useState(false);
+  const [suggestBanner, setSuggestBanner] = useState<Banner>(null);
+
+  // Flatten a suggestion into the concrete files we can apply, keyed by path.
+  const suggestedFiles: SuggestedFile[] = useMemo(() => {
+    if (!suggestion) return [];
+    const files: SuggestedFile[] = [];
+    if (suggestion.claude_md.trim())
+      files.push({ path: "CLAUDE.md", content: suggestion.claude_md });
+    if (suggestion.settings_json.trim())
+      files.push({
+        path: ".claude/settings.json",
+        content: suggestion.settings_json,
+      });
+    for (const dc of suggestion.dev_configs) {
+      if (dc.path.trim()) files.push(dc);
+    }
+    return files;
+  }, [suggestion]);
+
+  const runSuggest = async () => {
+    if (suggestRepoId === "") {
+      setSuggestBanner({ kind: "err", text: "Pick a repository first." });
+      return;
+    }
+    setSuggesting(true);
+    setSuggestBanner(null);
+    setSuggestion(null);
+    setChecked({});
+    const repoId = Number(suggestRepoId);
+    const repoName =
+      repos?.find((r) => r.id === repoId)?.full_name ?? `repo ${repoId}`;
+    setSuggestRepoName(repoName);
+    try {
+      const res = await suggestSettings({ repo_id: repoId });
+      setSuggestion(res);
+      // Default every proposed file to checked.
+      const next: Record<string, boolean> = {};
+      if (res.claude_md.trim()) next["CLAUDE.md"] = true;
+      if (res.settings_json.trim()) next[".claude/settings.json"] = true;
+      for (const dc of res.dev_configs) {
+        if (dc.path.trim()) next[dc.path] = true;
+      }
+      setChecked(next);
+      setSuggestBanner({
+        kind: "ok",
+        text: `Suggestion ready for "${repoName}". Review the files below.`,
+      });
+    } catch (err) {
+      setSuggestBanner({
+        kind: "err",
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  const applySelected = async () => {
+    if (suggestRepoId === "" || !suggestion) return;
+    const files = suggestedFiles.filter((f) => checked[f.path]);
+    if (files.length === 0) {
+      setSuggestBanner({ kind: "err", text: "Select at least one file." });
+      return;
+    }
+    setApplying(true);
+    setSuggestBanner(null);
+    try {
+      const res = await applySuggestion({
+        repo_id: Number(suggestRepoId),
+        files,
+      });
+      setSuggestBanner({
+        kind: "ok",
+        text: res.ok
+          ? `Applied ${files.length} file${files.length === 1 ? "" : "s"} to branch "${res.branch}". Review and open a PR to merge.`
+          : "Apply reported failure.",
+      });
+    } catch (err) {
+      setSuggestBanner({
+        kind: "err",
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const checkedCount = suggestedFiles.filter((f) => checked[f.path]).length;
+
+  return (
+    <section className="rounded-xl border border-edge bg-panel p-6">
+      <h2 className="text-lg font-semibold">Suggest settings (AI)</h2>
+      <p className="mt-1 text-xs text-slate-500">
+        Ask Claude to propose a{" "}
+        <code className="text-slate-400">CLAUDE.md</code>,{" "}
+        <code className="text-slate-400">.claude/settings.json</code>, and dev
+        config for a repo. Nothing is written until you apply — selected files
+        land on the <span className="text-accent">repohub-staging</span> branch
+        for you to review and merge.
+      </p>
+
+      <div className="mt-4 flex flex-wrap items-end gap-3">
+        <Field label="Repository">
+          {reposLoading ? (
+            <span className="px-1 py-2 text-sm text-slate-400">
+              Loading repos…
             </span>
+          ) : reposError ? (
+            <span className="px-1 py-2 text-sm text-rose-400">
+              {reposError}
+            </span>
+          ) : (
+            <select
+              value={suggestRepoId}
+              onChange={(e) =>
+                setSuggestRepoId(
+                  e.target.value === "" ? "" : Number(e.target.value),
+                )
+              }
+              className={inputCls}
+            >
+              <option value="">Select a repo…</option>
+              {(repos ?? []).map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.full_name}
+                  {r.local_path ? "" : " (not cloned)"}
+                </option>
+              ))}
+            </select>
+          )}
+        </Field>
+        <button
+          onClick={runSuggest}
+          disabled={suggesting || suggestRepoId === ""}
+          className="rounded-md bg-accent/20 px-4 py-2 text-sm text-accent transition hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {suggesting ? "Asking Claude…" : "Suggest"}
+        </button>
+        {suggesting && (
+          <span className="text-xs text-slate-500">
+            This calls Claude and may take a while.
+          </span>
+        )}
+      </div>
+
+      {suggestBanner && <BannerRow banner={suggestBanner} />}
+
+      {suggestion && (
+        <div className="mt-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-slate-400">
+              Proposed for{" "}
+              <span className="font-medium text-slate-200">
+                {suggestRepoName}
+              </span>{" "}
+              · {suggestedFiles.length} file
+              {suggestedFiles.length === 1 ? "" : "s"} · {checkedCount} selected
+            </p>
+            <button
+              onClick={applySelected}
+              disabled={applying || checkedCount === 0}
+              className="rounded-md bg-accent/20 px-3 py-1.5 text-sm text-accent transition hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {applying ? "Applying…" : "Apply selected to staging"}
+            </button>
+          </div>
+
+          {suggestion.rationale.trim() && (
+            <div className="rounded-lg border border-edge bg-slate-900/40 p-3">
+              <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                Rationale
+              </h3>
+              <p className="mt-1.5 whitespace-pre-wrap text-sm text-slate-300">
+                {suggestion.rationale}
+              </p>
+            </div>
+          )}
+
+          {suggestedFiles.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-edge px-4 py-6 text-center text-sm text-slate-500">
+              Claude did not propose any files.
+            </p>
+          ) : (
+            suggestedFiles.map((f) => (
+              <SuggestFile
+                key={f.path}
+                file={f}
+                checked={!!checked[f.path]}
+                onToggle={() =>
+                  setChecked((c) => ({ ...c, [f.path]: !c[f.path] }))
+                }
+              />
+            ))
           )}
         </div>
-
-        {suggestBanner && <BannerRow banner={suggestBanner} />}
-
-        {suggestion && (
-          <div className="mt-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-slate-400">
-                Proposed for{" "}
-                <span className="font-medium text-slate-200">
-                  {suggestRepoName}
-                </span>{" "}
-                · {suggestedFiles.length} file
-                {suggestedFiles.length === 1 ? "" : "s"} · {checkedCount}{" "}
-                selected
-              </p>
-              <button
-                onClick={applySelected}
-                disabled={applying || checkedCount === 0}
-                className="rounded-md bg-accent/20 px-3 py-1.5 text-sm text-accent transition hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {applying ? "Applying…" : "Apply selected to staging"}
-              </button>
-            </div>
-
-            {suggestion.rationale.trim() && (
-              <div className="rounded-lg border border-edge bg-slate-900/40 p-3">
-                <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                  Rationale
-                </h3>
-                <p className="mt-1.5 whitespace-pre-wrap text-sm text-slate-300">
-                  {suggestion.rationale}
-                </p>
-              </div>
-            )}
-
-            {suggestedFiles.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-edge px-4 py-6 text-center text-sm text-slate-500">
-                Claude did not propose any files.
-              </p>
-            ) : (
-              suggestedFiles.map((f) => (
-                <SuggestFile
-                  key={f.path}
-                  file={f}
-                  checked={!!checked[f.path]}
-                  onToggle={() =>
-                    setChecked((c) => ({ ...c, [f.path]: !c[f.path] }))
-                  }
-                />
-              ))
-            )}
-          </div>
-        )}
-      </section>
-    </div>
+      )}
+    </section>
   );
 }
 
@@ -849,10 +1059,16 @@ function SuggestFile({
   );
 }
 
-const inputCls =
+// ===========================================================================
+// Shared primitives (used by preserved sections; exported for new sections)
+// ===========================================================================
+
+export type Banner = { kind: "ok" | "err"; text: string } | null;
+
+export const inputCls =
   "w-full rounded-md border border-edge bg-slate-900/60 px-3 py-2 text-sm text-slate-200 outline-none focus:border-accent";
 
-function Field({
+export function Field({
   label,
   children,
 }: {
@@ -867,7 +1083,7 @@ function Field({
   );
 }
 
-function BannerRow({ banner }: { banner: NonNullable<Banner> }) {
+export function BannerRow({ banner }: { banner: NonNullable<Banner> }) {
   return (
     <p
       className={`mt-3 rounded-md px-3 py-2 text-sm ${
@@ -881,7 +1097,13 @@ function BannerRow({ banner }: { banner: NonNullable<Banner> }) {
   );
 }
 
-function ErrorRow({ text, onRetry }: { text: string; onRetry: () => void }) {
+export function ErrorRow({
+  text,
+  onRetry,
+}: {
+  text: string;
+  onRetry: () => void;
+}) {
   return (
     <div className="mt-4 flex items-center justify-between rounded-md bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
       <span>{text}</span>

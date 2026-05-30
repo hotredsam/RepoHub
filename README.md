@@ -107,6 +107,7 @@ Backend only: `cd backend && cargo run`
 | P13 | **Voice-to-text input** | ✅ done |
 | P14 | **Infra wiring: NAS / SSH resource registry** | ✅ done |
 | P15 | **Cloud migration helper (→ Google Cloud)** | ✅ done |
+| P16 | **Unified layered Settings hub** (global ~/.claude + per-repo overrides; agents, MCP, knowledge, evals, Google Cloud) | 🟡 RepoHub side done; Google Cloud activation pending (needs gcloud + ADC) |
 
 ## Security
 

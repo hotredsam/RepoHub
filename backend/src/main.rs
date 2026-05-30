@@ -3,17 +3,24 @@
 //! Boots an axum server on `127.0.0.1`, wires up the SQLite database, spawns the
 //! background fetch scheduler, and merges every feature router under one app.
 
+mod agents_config;
 mod bulk;
 mod claude_api;
+mod claude_config;
+mod claude_fs;
 mod claude_runner;
 mod config;
 mod connections;
 mod consistency;
 mod db;
 mod error;
+mod evals_gcloud;
+mod gcloud;
 mod github;
 mod gitops;
 mod infra;
+mod knowledge;
+mod mcp_config;
 mod merge;
 mod models;
 mod prompts_api;
@@ -93,6 +100,11 @@ async fn main() -> anyhow::Result<()> {
         .merge(connections::router())
         .merge(consistency::router())
         .merge(merge::router())
+        .merge(claude_config::router())
+        .merge(agents_config::router())
+        .merge(mcp_config::router())
+        .merge(knowledge::router())
+        .merge(evals_gcloud::router())
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(cors);

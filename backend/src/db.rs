@@ -87,6 +87,27 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_unique
     ON settings(scope, IFNULL(repo_id, -1), key);
+
+CREATE TABLE IF NOT EXISTS eval_suites (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    repo_id     INTEGER,
+    config_json TEXT,
+    created_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS eval_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    suite_id    INTEGER,
+    model       TEXT,
+    score       REAL,
+    passed      INTEGER,
+    total       INTEGER,
+    detail_json TEXT,
+    created_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_eval_runs_suite ON eval_runs(suite_id);
 "#;
 
 /// Connect to the SQLite database and apply the embedded schema.
